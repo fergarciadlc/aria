@@ -13,6 +13,10 @@ from typing import Any
 from aria.exceptions import MissingStemError, TrackNotFoundError
 
 
+REAL_STEM_EXTENSIONS = (".wav", ".mp3")
+AI_STEM_EXTENSIONS = (".mp3", ".wav")
+
+
 @dataclass
 class Track:
     """A single track in the ARIA dataset.
@@ -111,18 +115,21 @@ def get_stem_path(
         MissingStemError: If the stem file doesn't exist.
     """
     if source == "real":
-        stem_path = track.path / "stems" / "real" / f"{stem_name}.wav"
+        for extension in REAL_STEM_EXTENSIONS:
+            stem_path = track.path / "stems" / "real" / f"{stem_name}{extension}"
+            if stem_path.exists():
+                return stem_path
     elif source == "ai_generated":
         if codec is None:
             raise ValueError("codec must be specified for ai_generated stems")
-        stem_path = track.path / "stems" / "ai_generated" / codec / f"{stem_name}.wav"
+        for extension in AI_STEM_EXTENSIONS:
+            stem_path = track.path / "stems" / "ai_generated" / codec / f"{stem_name}{extension}"
+            if stem_path.exists():
+                return stem_path
     else:
         raise ValueError(f"Invalid source: {source}. Use 'real' or 'ai_generated'")
 
-    if not stem_path.exists():
-        raise MissingStemError(stem_name, source, track.id)
-
-    return stem_path
+    raise MissingStemError(stem_name, source, track.id)
 
 
 def get_available_codecs(track: Track) -> list[str]:

@@ -1,11 +1,11 @@
-"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+"""
 Generate all possible mixes combining real and AI-generated stems.
 
 This script processes tracks from the ARIA dataset (after prepare_moisesdb.py and generate_ai_stems.py)
 and creates all 2^n combinations of real and AI-generated stems, where n is the number of stems per track.
 
 The output structure follows the ARIA specification:
-    {aria_path}/{track_id}/mixes/{codec}/Uk/mix_S-{indices}.wav
+    {aria_path}/{track_id}/mixes/{codec}/Uk/mix_S-{indices}.mp3
 
 Where:
     - codec = AI model used (e.g., encodec_3, encodec_6)
@@ -14,11 +14,11 @@ Where:
     - "empty" = special case for all-real stems (U0)
 
 For a track with 4 stems using encodec_3, this generates 2^4 = 16 mixes:
-    - mixes/encodec_3/U0/mix_S-empty.wav (all real)
-    - mixes/encodec_3/U1/mix_S-0.wav, mix_S-1.wav, mix_S-2.wav, mix_S-3.wav
-    - mixes/encodec_3/U2/mix_S-0-1.wav, mix_S-0-2.wav, ...
-    - mixes/encodec_3/U3/mix_S-0-1-2.wav, ...
-    - mixes/encodec_3/U4/mix_S-0-1-2-3.wav (all AI-generated)
+    - mixes/encodec_3/U0/mix_S-empty.mp3 (all real)
+    - mixes/encodec_3/U1/mix_S-0.mp3, mix_S-1.mp3, mix_S-2.mp3, mix_S-3.mp3
+    - mixes/encodec_3/U2/mix_S-0-1.mp3, mix_S-0-2.mp3, ...
+    - mixes/encodec_3/U3/mix_S-0-1-2.mp3, ...
+    - mixes/encodec_3/U4/mix_S-0-1-2-3.mp3 (all AI-generated)
 
 Usage:
     python generate_mixes.py [--aria-path PATH] [--limit N] [--model encodec_3]
@@ -39,21 +39,29 @@ Examples:
 
 import argparse
 import json
+from multiprocessing import Pool, cpu_count
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, asdict
 from itertools import combinations
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 import numpy as np
-import soundfile as sf
+import torch
+import torchaudio
 from loguru import logger
 from tqdm import tqdm
 
 # Configuration
 ARIA_PATH = "/Users/fernando/datasets/aria"
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 44100
 DEFAULT_CODEC = "encodec_3"
+OUTPUT_BITRATE_KBPS = 256
+STEM_EXTENSIONS = (".wav", ".mp3")
+NUM_WORKERS = 1
 
 
 @dataclass
@@ -80,6 +88,16 @@ class ProcessingStats:
     generated_mixes: int = 0
     skipped_mixes: int = 0
     failed_mixes: int = 0
+
+
+def merge_stats(target: ProcessingStats, source: ProcessingStats) -> None:
+    """Accumulate per-track statistics into the global totals."""
+    target.processed_tracks += source.processed_tracks
+    target.skipped_tracks += source.skipped_tracks
+    target.total_mixes += source.total_mixes
+    target.generated_mixes += source.generated_mixes
+    target.skipped_mixes += source.skipped_mixes
+    target.failed_mixes += source.failed_mixes
 
 
 def load_track_metadata(track_path: Path) -> Optional[dict]:
@@ -136,9 +154,18 @@ def get_stem_files(track_path: Path, stem_type: str, codec: Optional[str] = None
         logger.warning(f"Stems directory not found: {stems_path}")
         return []
     
-    # Get all .wav files
-    stem_files = sorted(stems_path.glob("*.wav"))
+    stem_files = []
+    for extension in STEM_EXTENSIONS:
+        stem_files.extend(stems_path.glob(f"*{extension}"))
+
+    stem_files = sorted(stem_files, key=lambda path: path.stem)
     return stem_files
+
+
+def ensure_ffmpeg_available() -> None:
+    """Ensure ffmpeg is installed before attempting MP3 export."""
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is required to export MP3 mixes but was not found in PATH")
 
 
 def load_audio(file_path: Path) -> Tuple[np.ndarray, int]:
@@ -149,10 +176,19 @@ def load_audio(file_path: Path) -> Tuple[np.ndarray, int]:
         Tuple of (audio_array, sample_rate)
         Audio array shape: (channels, samples)
     """
-    audio, sr = sf.read(file_path, always_2d=True)
-    # soundfile loads as (samples, channels), transpose to (channels, samples)
-    audio = audio.T
-    return audio, sr
+    file_format = file_path.suffix.lstrip(".") or None
+    audio, sr = torchaudio.load(str(file_path), format=file_format)
+    audio = torch.squeeze(audio)
+    if audio.ndim == 1:
+        audio = torch.stack([audio, audio], 0)
+    elif audio.ndim == 2 and audio.shape[0] > 2:
+        audio = audio[:2, :]
+
+    if sr != SAMPLE_RATE:
+        audio = torchaudio.functional.resample(audio, sr, SAMPLE_RATE)
+        sr = SAMPLE_RATE
+
+    return audio.cpu().numpy(), sr
 
 
 def pad_to_length(audio: np.ndarray, target_length: int) -> np.ndarray:
@@ -208,7 +244,7 @@ def generate_mix_name(ai_indices: Set[int]) -> str:
         ai_indices: Set of stem indices that are AI-generated
     
     Returns:
-        Mix filename (without .wav extension)
+        Mix filename (without extension)
     """
     if not ai_indices:
         return "mix_S-empty"
@@ -243,20 +279,37 @@ def generate_all_combinations(n_stems: int) -> List[Set[int]]:
 
 def save_audio(file_path: Path, audio: np.ndarray, sample_rate: int):
     """
-    Save audio to file.
+    Save mixed audio to MP3 via ffmpeg using a temporary WAV intermediary.
     
     Args:
         file_path: Path to save the audio
         audio: Audio array of shape (channels, samples)
         sample_rate: Sample rate
     """
-    # Ensure output directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # soundfile expects (samples, channels), so transpose
-    audio_to_save = audio.T
-    
-    sf.write(file_path, audio_to_save, sample_rate, subtype='PCM_24')
+
+    audio_tensor = torch.from_numpy(audio).to(torch.float32)
+    bitrate_kbps = min(int(OUTPUT_BITRATE_KBPS), 320)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp_file:
+        torchaudio.save(tmp_file.name, audio_tensor, sample_rate=sample_rate)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                tmp_file.name,
+                "-c:a",
+                "mp3",
+                "-b:a",
+                f"{bitrate_kbps}k",
+                str(file_path),
+            ],
+            check=True,
+        )
 
 
 def save_mix_metadata(file_path: Path, metadata: MixMetadata):
@@ -269,9 +322,8 @@ def save_mix_metadata(file_path: Path, metadata: MixMetadata):
 def process_track(
     track_path: Path,
     codec: str,
-    stats: ProcessingStats,
     force_regenerate: bool = False
-) -> None:
+) -> ProcessingStats:
     """
     Process a single track and generate all possible mixes.
     
@@ -281,11 +333,13 @@ def process_track(
         stats: ProcessingStats object to update
         force_regenerate: If True, regenerate even if mix already exists
     """
+    stats = ProcessingStats()
+
     # Load metadata
     metadata = load_track_metadata(track_path)
     if metadata is None:
         stats.skipped_tracks += 1
-        return
+        return stats
     
     track_name = f"{metadata.get('artist', 'Unknown')} - {metadata.get('name', 'Unknown')}"
     
@@ -294,21 +348,21 @@ def process_track(
     if not real_stems:
         logger.warning(f"No real stems found for {track_name}")
         stats.skipped_tracks += 1
-        return
+        return stats
     
     # Get AI-generated stems
     ai_stems = get_stem_files(track_path, "ai_generated", codec)
     if not ai_stems:
         logger.warning(f"No AI-generated stems ({codec}) found for {track_name}")
         stats.skipped_tracks += 1
-        return
+        return stats
     
     # Verify we have matching stems
     n_stems = len(real_stems)
     if len(ai_stems) != n_stems:
         logger.error(f"Mismatch in stem counts for {track_name}: {n_stems} real vs {len(ai_stems)} AI")
         stats.skipped_tracks += 1
-        return
+        return stats
     
     # Extract stem names (without extension)
     stem_names = [stem.stem for stem in real_stems]
@@ -326,7 +380,7 @@ def process_track(
         
         # Define output path with codec folder
         output_dir = track_path / "mixes" / codec / f"U{num_ai_stems}"
-        output_path = output_dir / f"{mix_name}.wav"
+        output_path = output_dir / f"{mix_name}.mp3"
         metadata_path = output_dir / f"{mix_name}.json"
         
         # Skip if already exists (unless force_regenerate)
@@ -348,10 +402,8 @@ def process_track(
                 
                 audio, sr = load_audio(stem_path)
                 
-                # Resample if needed (shouldn't happen, but just in case)
                 if sr != SAMPLE_RATE:
                     logger.warning(f"Unexpected sample rate {sr} for {stem_path.name}, expected {SAMPLE_RATE}")
-                    # For now, we'll skip resampling as all stems should be at SAMPLE_RATE
                 
                 audio_list.append(audio)
             
@@ -379,13 +431,21 @@ def process_track(
             stats.failed_mixes += 1
     
     stats.processed_tracks += 1
+    return stats
+
+
+def process_track_worker(args: Tuple[Path, str, bool]) -> ProcessingStats:
+    """Worker wrapper for multiprocessing."""
+    track_path, codec, force_regenerate = args
+    return process_track(track_path, codec, force_regenerate)
 
 
 def generate_mixes(
     aria_path: str = ARIA_PATH,
     limit: Optional[int] = None,
     model: str = DEFAULT_CODEC,
-    force_regenerate: bool = False
+    force_regenerate: bool = False,
+    num_workers: int = NUM_WORKERS,
 ) -> None:
     """
     Main function to generate all mixes.
@@ -397,6 +457,14 @@ def generate_mixes(
         force_regenerate: If True, regenerate mixes even if they already exist
     """
     aria_path = Path(aria_path)
+    ensure_ffmpeg_available()
+
+    max_workers = cpu_count()
+    if num_workers > max_workers:
+        logger.warning(
+            f"Requested {num_workers} workers but only {max_workers} CPUs available. Using {max_workers}."
+        )
+        num_workers = max_workers
     
     logger.info("="*80)
     logger.info("ARIA Mix Generation")
@@ -404,7 +472,9 @@ def generate_mixes(
     logger.info(f"Dataset path: {aria_path}")
     logger.info(f"AI model/codec: {model}")
     logger.info(f"Sample rate: {SAMPLE_RATE} Hz")
+    logger.info(f"Output format: mp3 @ {OUTPUT_BITRATE_KBPS} kbps")
     logger.info(f"Force regenerate: {force_regenerate}")
+    logger.info(f"Workers: {num_workers} (max available: {max_workers})")
     
     # Get track directories
     track_dirs = get_track_directories(aria_path)
@@ -419,18 +489,27 @@ def generate_mixes(
     
     # Initialize statistics
     stats = ProcessingStats(total_tracks=len(track_dirs))
-    
-    # Process each track
+
     logger.info(f"Processing {len(track_dirs)} tracks...")
-    pbar = tqdm(track_dirs, desc="Generating mixes")
-    
-    for track_path in pbar:
-        metadata = load_track_metadata(track_path)
-        if metadata:
-            track_name = f"{metadata.get('artist', 'Unknown')} - {metadata.get('name', 'Unknown')}"
-            pbar.set_postfix_str(track_name[:50])
-        
-        process_track(track_path, model, stats, force_regenerate)
+    if num_workers == 1:
+        pbar = tqdm(track_dirs, desc="Generating mixes")
+        for track_path in pbar:
+            metadata = load_track_metadata(track_path)
+            if metadata:
+                track_name = f"{metadata.get('artist', 'Unknown')} - {metadata.get('name', 'Unknown')}"
+                pbar.set_postfix_str(track_name[:50])
+
+            track_stats = process_track(track_path, model, force_regenerate)
+            merge_stats(stats, track_stats)
+    else:
+        work_items = [(track_path, model, force_regenerate) for track_path in track_dirs]
+        with Pool(processes=num_workers) as pool:
+            for track_stats in tqdm(
+                pool.imap_unordered(process_track_worker, work_items),
+                total=len(work_items),
+                desc="Generating mixes",
+            ):
+                merge_stats(stats, track_stats)
     
     # Print final statistics
     logger.info("="*80)
@@ -494,6 +573,13 @@ Examples:
         action="store_true",
         help="Force regeneration of mixes even if they already exist"
     )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=NUM_WORKERS,
+        help=f"Number of parallel worker processes (default: {NUM_WORKERS}, max: CPU count)"
+    )
     
     return parser.parse_args()
 
@@ -505,6 +591,7 @@ if __name__ == "__main__":
         aria_path=args.aria_path,
         limit=args.limit,
         model=args.model,
-        force_regenerate=args.force
+        force_regenerate=args.force,
+        num_workers=args.workers
     )
 

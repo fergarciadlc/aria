@@ -61,14 +61,10 @@ def mock_track_with_ai(mock_track_path):
     # Create AI stems directory
     ai_stems_path = mock_track_path / "stems" / "ai_generated" / "encodec_3"
     ai_stems_path.mkdir(parents=True)
-    
-    # Create mock AI audio files
-    sr = 48000
-    samples = int(sr * 1.0)
-    
+
+    # AI-generated stems now default to MP3 outputs.
     for stem_name in ["vocals", "drums", "bass"]:
-        audio = np.random.randn(2, samples).astype(np.float32) * 0.1
-        sf.write(ai_stems_path / f"{stem_name}.wav", audio.T, sr)
+        (ai_stems_path / f"{stem_name}.mp3").touch()
     
     return mock_track_path
 
@@ -109,10 +105,9 @@ def mock_dataset_path(temp_dir):
         # AI stems
         ai_path = track_path / "stems" / "ai_generated" / "encodec_3"
         ai_path.mkdir(parents=True)
-        
+
         for stem_name in track_data["stems"]:
-            audio = np.random.randn(2, samples).astype(np.float32) * 0.1
-            sf.write(ai_path / f"{stem_name}.wav", audio.T, sr)
+            (ai_path / f"{stem_name}.mp3").touch()
     
     return temp_dir
 

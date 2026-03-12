@@ -81,6 +81,18 @@ class TestGetStemPath:
         
         assert path.exists()
         assert path.name == "vocals.wav"
+
+    def test_get_real_stem_path_falls_back_to_mp3(self, mock_track_path):
+        """Test real stems can be loaded from MP3-backed datasets."""
+        wav_path = mock_track_path / "stems" / "real" / "vocals.wav"
+        wav_path.unlink()
+        (mock_track_path / "stems" / "real" / "vocals.mp3").touch()
+
+        track = load_track(mock_track_path)
+        path = get_stem_path(track, "vocals", "real")
+
+        assert path.exists()
+        assert path.name == "vocals.mp3"
     
     def test_get_ai_stem_path(self, mock_track_with_ai):
         """Test getting path to AI stem."""
@@ -88,7 +100,20 @@ class TestGetStemPath:
         path = get_stem_path(track, "vocals", "ai_generated", "encodec_3")
         
         assert path.exists()
+        assert path.name == "vocals.mp3"
         assert "encodec_3" in str(path)
+
+    def test_get_ai_stem_path_falls_back_to_wav(self, mock_track_path):
+        """Test backward compatibility with legacy WAV AI stems."""
+        legacy_ai_dir = mock_track_path / "stems" / "ai_generated" / "encodec_3"
+        legacy_ai_dir.mkdir(parents=True)
+        (legacy_ai_dir / "vocals.wav").touch()
+
+        track = load_track(mock_track_path)
+        path = get_stem_path(track, "vocals", "ai_generated", "encodec_3")
+
+        assert path.exists()
+        assert path.name == "vocals.wav"
     
     def test_missing_stem_raises(self, mock_track_path):
         """Test that missing stem raises error."""

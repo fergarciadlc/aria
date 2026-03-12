@@ -267,7 +267,7 @@ aria/
 │   │   │   └── guitar.wav
 │   │   └── ai_generated/       # AI-reconstructed stems
 │   │       ├── encodec_3/      # Encodec @ 3 kbps
-│   │       │   ├── vocals.wav
+│   │       │   ├── vocals.mp3
 │   │       │   └── ...
 │   │       ├── encodec_6/      # Encodec @ 6 kbps
 │   │       └── encodec_24/     # Encodec @ 24 kbps
@@ -418,6 +418,8 @@ python scripts/prepare_moisesdb.py \
 python scripts/generate_ai_stems.py \
     --aria-path /path/to/aria \
     --bandwidths 3 6 24
+
+# Outputs AI stems as 256 kbps MP3 files at 44.1 kHz by default
 
 # 3. (Optional) Pre-generate mixes
 python scripts/generate_mixes.py \
