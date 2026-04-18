@@ -121,7 +121,7 @@ def compute_mix(
     return sum_stems(stems)
 
 
-def get_mix_path(track: Track, mix_spec: MixSpec) -> Path:
+def get_mix_path(track: Track, mix_spec: MixSpec, format: str = "wav") -> Path:
     """Get the path where a pre-computed mix would be stored.
 
     Args:
@@ -136,7 +136,7 @@ def get_mix_path(track: Track, mix_spec: MixSpec) -> Path:
         / "mixes"
         / mix_spec.codec
         / mix_spec.u_folder
-        / f"{mix_spec.filename}.wav"
+        / f"{mix_spec.filename}.{format}"
     )
 
 

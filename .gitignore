@@ -49,3 +49,5 @@ dist/
 # Temporary files
 tmp/
 temp/
+*.npy
+data/

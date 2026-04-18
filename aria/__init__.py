@@ -9,6 +9,7 @@ from aria.track import Track
 from aria.mix import MixSpec, compute_mix, generate_all_mix_specs
 from aria.audio import load_audio, save_audio
 from aria.config import Config
+from aria.splits import SplitManifest, ManifestRecord
 from aria.exceptions import (
     ARIAError,
     DatasetNotFoundError,
@@ -36,6 +37,8 @@ __all__ = [
     "Track",
     "MixSpec",
     "Config",
+    "SplitManifest",
+    "ManifestRecord",
     # Functions
     "compute_mix",
     "generate_all_mix_specs",

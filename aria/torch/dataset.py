@@ -5,7 +5,7 @@ Provides a map-style dataset for training audio deepfake detectors.
 """
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -13,8 +13,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from aria.audio import load_audio
 from aria.dataset import ARIADataset
 from aria.mix import MixSpec, generate_all_mix_specs, get_or_compute_mix
+from aria.splits import SplitManifest
 from aria.track import Track
 
 
@@ -52,11 +54,15 @@ class MixSample:
         track_id: Track identifier.
         mix_spec: Mix specification.
         label: Label value (interpretation depends on label_mode).
+        mix_path: Absolute path to a pre-computed mix file. When set,
+            audio is loaded directly from this path instead of computing
+            on-the-fly from stems.
     """
 
     track_id: str
     mix_spec: MixSpec
     label: int | float
+    mix_path: Path | None = field(default=None)
 
 
 LabelMode = Literal["binary", "count", "ratio"]
@@ -94,6 +100,8 @@ class ARIATorchDataset(Dataset):
         mix_sampling: MixSampling = "all",
         eval_mode: bool = False,
         seed: int | None = None,
+        manifest: SplitManifest | None = None,
+        split: str | None = None,
     ):
         """Initialize the dataset.
 
@@ -106,12 +114,19 @@ class ARIATorchDataset(Dataset):
                 - "binary": 0 = all real, 1 = has any AI
                 - "count": Number of AI stems (0, 1, 2, ...)
                 - "ratio": Fraction of AI stems (0.0 to 1.0)
-            mix_sampling: Which mixes to include:
+            mix_sampling: Which mixes to include (only used when manifest
+                is not provided):
                 - "all": All 2^n combinations per track
                 - "binary": Only U0 (all real) and Un (all AI)
                 - "balanced": Equal samples per U-level
             eval_mode: If True, use deterministic center crops.
             seed: Random seed for reproducibility.
+            manifest: Optional SplitManifest. When provided, samples are
+                loaded directly from the manifest (with pre-computed mix
+                paths) rather than discovered from the dataset directory.
+                mix_sampling is ignored in this mode.
+            split: Split partition to use from the manifest ("train", "val",
+                or "test"). Required when manifest is provided.
         """
         self.aria_dataset = ARIADataset(path)
         self.codec = codec
@@ -122,12 +137,52 @@ class ARIATorchDataset(Dataset):
         self.mix_sampling = mix_sampling
         self.eval_mode = eval_mode
 
+        if manifest is not None and split is None:
+            raise ValueError("split must be specified when manifest is provided (e.g. 'train').")
+
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
 
-        # Build list of all (track, mix_spec) combinations
-        self._samples = self._build_samples()
+        if manifest is not None:
+            self._samples = self._build_samples_from_manifest(manifest, split)
+        else:
+            self._samples = self._build_samples()
+
+    def _build_samples_from_manifest(
+        self, manifest: SplitManifest, split: str
+    ) -> list[MixSample]:
+        """Build samples from a split manifest.
+
+        Each ManifestRecord maps 1-to-1 to a MixSample with an explicit
+        mix_path, so audio is loaded directly without on-the-fly computation.
+        """
+        records = manifest.get_split(split)
+        samples = []
+
+        for record in records:
+            mix_spec = MixSpec(ai_indices=record.ai_indices, codec=record.codec)
+            label = self._compute_label_from_ratio(record.ai_ratio, record.num_stems)
+            mix_path = manifest.resolve_mix_path(record)
+            samples.append(MixSample(
+                track_id=record.track_id,
+                mix_spec=mix_spec,
+                label=label,
+                mix_path=mix_path,
+            ))
+
+        return samples
+
+    def _compute_label_from_ratio(self, ai_ratio: float, num_stems: int) -> int | float:
+        """Compute label from a known ai_ratio (used in manifest mode)."""
+        if self.label_mode == "binary":
+            return 0 if ai_ratio == 0.0 else 1
+        elif self.label_mode == "count":
+            return round(ai_ratio * num_stems)
+        elif self.label_mode == "ratio":
+            return ai_ratio
+        else:
+            raise ValueError(f"Unknown label_mode: {self.label_mode}")
 
     def _build_samples(self) -> list[MixSample]:
         """Build list of all samples based on mix_sampling strategy."""
@@ -184,14 +239,18 @@ class ARIATorchDataset(Dataset):
                 - "codec": Codec name
         """
         sample = self._samples[idx]
-        track = self.aria_dataset[sample.track_id]
 
-        # Get or compute mix audio
-        audio = get_or_compute_mix(
-            track,
-            sample.mix_spec,
-            target_sr=self.sample_rate,
-        )
+        # Load audio: use pre-computed path if available (manifest mode),
+        # otherwise compute on-the-fly from stems.
+        if sample.mix_path is not None:
+            audio, _ = load_audio(sample.mix_path, target_sr=self.sample_rate)
+        else:
+            track = self.aria_dataset[sample.track_id]
+            audio = get_or_compute_mix(
+                track,
+                sample.mix_spec,
+                target_sr=self.sample_rate,
+            )
 
         # Crop to segment
         audio = self._crop_audio(audio)
