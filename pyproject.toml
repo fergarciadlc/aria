@@ -63,6 +63,10 @@ aria = "aria.cli:main"
 Homepage = "https://github.com/fergarciadlc/aria"
 Documentation = "https://github.com/fergarciadlc/aria#readme"
 Repository = "https://github.com/fergarciadlc/aria"
+Paper = "https://arxiv.org/abs/2608.07285"
+Thesis = "https://zenodo.org/records/23186445"
+Website = "https://fergarciadlc.github.io/ismir26-how-much-ai/"
+"Detector training code" = "https://github.com/fergarciadlc/detector-models"
 
 [tool.setuptools.packages.find]
 include = ["aria*"]
