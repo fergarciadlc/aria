@@ -137,8 +137,9 @@ class EncodecGenerator:
         if self.mode == "corrected":
             model_input = resample(audio, sr, self.MODEL_SAMPLE_RATE)
 
-        # In replicate mode the processor is told the audio is 48 kHz even
-        # though it is 44.1 kHz. This is the documented dataset recipe.
+        # In replicate mode the processor is told the audio is 48 kHz while
+        # its actual rate is sr (44.1 kHz for ARIA). This is the documented
+        # dataset recipe.
         inputs = self._processor(
             raw_audio=model_input,
             sampling_rate=self._processor.sampling_rate,

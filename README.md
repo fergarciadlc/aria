@@ -1,6 +1,6 @@
 # ARIA
 
-**Authentic vs Reconstructed Isolated Audio**. A Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
+**Authentic vs Reconstructed Isolated Audio** is a Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
 
 Starting from any multitrack corpus with isolated stems, ARIA reconstructs every stem with a neural codec, builds every real/AI combination of each song's stems as a mix, and labels each mix with which stems are AI (split manifests can also carry the AI energy ratio α from per-mix metrics). Use it to train and benchmark detectors of fully or partially AI-generated music.
 
@@ -155,7 +155,7 @@ If you use ARIA, please cite the ISMIR 2026 paper ([arXiv:2608.07285](https://ar
 
 ## License
 
-[MIT](LICENSE). This repository distributes code only; audio and corpus data are not included.
+[MIT](LICENSE). The repository contains only code.
 
 Stems and mixes you build with ARIA are derived from your source corpus and remain under its license. For MoisesDB that is [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (non-commercial, share-alike).
 

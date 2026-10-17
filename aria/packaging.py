@@ -198,7 +198,7 @@ def package_dataset(
     Args:
         source_path: Path to full ARIA dataset.
         output_path: Where to write the packaged dataset.
-        config: Package configuration (use this or tier, not both).
+        config: Package configuration (mutually exclusive with tier).
         tier: Predefined tier name ("tiny", "small", "medium", "full").
         verbose: Show progress bar.
     
