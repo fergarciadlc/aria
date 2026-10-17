@@ -1,12 +1,11 @@
 """Tests for mix module."""
 
-import numpy as np
 import pytest
 
 from aria.mix import (
     MixSpec,
-    generate_all_mix_specs,
     compute_mix,
+    generate_all_mix_specs,
     get_mix_path,
 )
 from aria.track import load_track
@@ -139,6 +138,6 @@ class TestGetMixPath:
         assert "mixes" in str(path)
         assert "encodec_3" in str(path)
         assert "U2" in str(path)
-        assert "mix_S-0-2.wav" in str(path)
+        assert "mix_S-0-2.mp3" in str(path)
 
 

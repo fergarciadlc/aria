@@ -39,9 +39,8 @@ Options:
   --tier, -t TIER        Predefined tier: tiny, small, medium, full
   --num-tracks, -n N     Custom number of tracks (alternative to --tier)
   --format, -f FORMAT    Audio format: wav, flac, mp3 (default: flac)
-  --include-mixes, -m    Pre-generate all mixes
+  --include-mixes, -m    Include all mixes (copied if pre-computed, else computed)
   --codecs, -c CODECS    Comma-separated codecs (e.g., encodec_3,encodec_6)
-  --seed N               Random seed for track selection (default: 42)
 ```
 
 ### `python -m aria tiers`
@@ -228,8 +227,6 @@ tar -czvf aria-full-v1.0.tar.gz aria-full/
 Tracks are selected deterministically based on:
 1. Sorted alphabetically by `display_name` (Artist - Song)
 2. First N tracks selected
-
-The `--seed` option is reserved for future random selection but currently unused (deterministic selection ensures reproducibility).
 
 ---
 

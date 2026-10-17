@@ -4,29 +4,35 @@ ARIA - Authentic vs Reconstructed Isolated Audio
 A Python library for loading, exploring, and training on the ARIA dataset.
 """
 
-from aria.dataset import ARIADataset
-from aria.track import Track
-from aria.mix import MixSpec, compute_mix, generate_all_mix_specs
 from aria.audio import load_audio, save_audio
-from aria.config import Config
-from aria.splits import SplitManifest, ManifestRecord
+from aria.dataset import ARIADataset
 from aria.exceptions import (
     ARIAError,
-    DatasetNotFoundError,
-    TrackNotFoundError,
-    MissingStemError,
     AudioLoadError,
+    DatasetNotFoundError,
+    MissingStemError,
+    TrackNotFoundError,
 )
-from aria.validate import (
-    check_dataset_exists,
-    validate_dataset,
-    validate_track,
-    get_dataset_summary,
+from aria.mix import (
+    MixSpec,
+    compute_mix,
+    find_mix_path,
+    generate_all_mix_specs,
+    get_mix_path,
+    get_or_compute_mix,
 )
 from aria.packaging import (
-    package_dataset,
     PackageConfig,
     list_tiers,
+    package_dataset,
+)
+from aria.splits import ManifestRecord, SplitManifest
+from aria.track import Track, get_available_codecs, get_stem_path, load_track
+from aria.validate import (
+    check_dataset_exists,
+    get_dataset_summary,
+    validate_dataset,
+    validate_track,
 )
 
 __version__ = "0.1.0"
@@ -36,12 +42,17 @@ __all__ = [
     "ARIADataset",
     "Track",
     "MixSpec",
-    "Config",
     "SplitManifest",
     "ManifestRecord",
     # Functions
+    "load_track",
+    "get_stem_path",
+    "get_available_codecs",
     "compute_mix",
     "generate_all_mix_specs",
+    "get_mix_path",
+    "find_mix_path",
+    "get_or_compute_mix",
     "load_audio",
     "save_audio",
     # Validation
@@ -60,4 +71,3 @@ __all__ = [
     "MissingStemError",
     "AudioLoadError",
 ]
-

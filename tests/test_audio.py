@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from aria.audio import load_audio, save_audio, pad_to_length, sum_stems, resample
+from aria.audio import load_audio, pad_to_length, resample, save_audio, sum_stems
 from aria.exceptions import AudioLoadError
 
 
@@ -16,8 +16,8 @@ class TestLoadAudio:
         audio, sr = load_audio(audio_path)
         
         assert audio.shape[0] == 2  # Stereo
-        assert sr == 48000
-    
+        assert sr == 44100
+
     def test_load_audio_not_found(self, temp_dir):
         """Test loading non-existent file."""
         with pytest.raises(AudioLoadError, match="does not exist"):

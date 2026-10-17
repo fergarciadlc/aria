@@ -29,6 +29,7 @@ dependencies = [
     "numpy>=1.21",
     "soundfile>=0.12",
     "scipy>=1.9",
+    "tqdm>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -37,8 +38,10 @@ torch = [
 ]
 generators = [
     "torch>=2.0",
-    "torchaudio>=2.0",
-    "encodec>=0.1.1",
+    "transformers>=4.38",
+]
+scripts = [
+    "loguru>=0.7",
 ]
 dev = [
     "pytest>=7.0",
@@ -47,8 +50,11 @@ dev = [
     "mypy>=1.0",
 ]
 all = [
-    "aria-dataset[torch,generators,dev]",
+    "aria-dataset[torch,generators,scripts,dev]",
 ]
+
+[project.scripts]
+aria = "aria.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/your-org/aria"

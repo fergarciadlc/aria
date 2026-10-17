@@ -6,15 +6,16 @@ which contain combinations of real and AI-generated stems. It stores detailed me
 about each mix including which stems are AI-generated and what codec was used.
 
 Requirements:
-    - Deezer deepfake detector repository at: /Users/fernando/dev/projects/deezer/deepfake-detector
+    - A checkout of the Deezer deepfake detector, passed with --detector-path
+      or the DEEZER_DETECTOR_PATH environment variable
     - TensorFlow 2.x
     - torchaudio, soxr
     - loguru
 
-Usage:
+Usage (--aria-path / --detector-path default to $ARIA_ROOT / $DEEZER_DETECTOR_PATH):
     # Process all mixes from all tracks
-    python -m evaluation.aria_deepfake_inference
-    
+    python -m evaluation.aria_deepfake_inference --aria-path /path/to/aria --detector-path /path/to/deepfake-detector
+
     # Process mixes from first 10 tracks only
     python -m evaluation.aria_deepfake_inference --limit 10
     
@@ -36,7 +37,7 @@ Output format (JSONL):
     - num_ai_stems: number of AI-generated stems (0 to num_stems)
     - ai_stem_indices: list of which stem indices are AI
     - ai_codec: codec used for AI stems (e.g., "encodec_3")
-    - stem_names: names of all stems
+    - stem_names: names of all stems, in index order (alphabetical)
     - real_probability: mean probability of being real (0-1)
     - real_probability_std: std dev across slices
     - real_probability_min/max: min/max across slices
@@ -53,7 +54,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -63,18 +64,10 @@ import soxr
 from loguru import logger
 from tqdm import tqdm
 
-# Add Deezer detector to path
-DEEZER_DETECTOR_PATH = "/Users/fernando/dev/projects/deezer/deepfake-detector"
-sys.path.insert(0, DEEZER_DETECTOR_PATH)
+from aria.mix import MixSpec, find_mix_path, generate_all_mix_specs
+from aria.track import Track, iter_track_dirs, load_track
 
-from loader.global_variables import *
-from loader.config import ConfLoader
-from loader.audio import EvalAugmenter
-from model.simple_cnn import SimpleCNN, SimpleSpectrogramCNN
-
-# ARIA dataset configuration
-ARIA_PATH = "/Users/fernando/datasets/aria"
-SAMPLE_RATE_TARGET = 44100  # Deezer model expects 44.1kHz
+SAMPLE_RATE_TARGET= 44100  # Deezer model expects 44.1kHz
 
 # Encoder names for multi-task model
 ENCODER_NAMES = [
@@ -85,7 +78,18 @@ ENCODER_NAMES = [
 
 def parse_args():
     parser = argparse.ArgumentParser(description="ARIA dataset deepfake detection inference")
-    parser.add_argument("--aria-path", help="Path to ARIA dataset", type=str, default=ARIA_PATH)
+    parser.add_argument(
+        "--aria-path",
+        help="Path to ARIA dataset (default: $ARIA_ROOT)",
+        default=os.environ.get("ARIA_ROOT"),
+        required="ARIA_ROOT" not in os.environ,
+    )
+    parser.add_argument(
+        "--detector-path",
+        help="Path to the Deezer deepfake-detector checkout (default: $DEEZER_DETECTOR_PATH)",
+        default=os.environ.get("DEEZER_DETECTOR_PATH"),
+        required="DEEZER_DETECTOR_PATH" not in os.environ,
+    )
     parser.add_argument("--limit", help="Limit to N tracks (for testing)", type=int, default=None)
     parser.add_argument("--codec", help="Process only this codec (e.g., encodec_3)", type=str, default=None)
     parser.add_argument("--config", help="Deezer model config name", type=str, default="interpretable")
@@ -110,94 +114,30 @@ def setup_gpu(gpu_id):
         logger.info("Using CPU")
 
 
-def load_track_metadata(track_path: Path) -> Optional[dict]:
-    """Load metadata.json for a track."""
-    metadata_path = track_path / "metadata.json"
-    if not metadata_path.exists():
-        logger.warning(f"Metadata not found: {metadata_path}")
-        return None
-    
-    try:
-        with open(metadata_path, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Failed to load metadata from {metadata_path}: {e}")
-        return None
-
-
-def get_track_directories(aria_path: Path, limit: Optional[int] = None) -> List[Path]:
-    """Get track directories in the ARIA dataset."""
-    if not aria_path.exists():
-        logger.error(f"ARIA path does not exist: {aria_path}")
-        return []
-    
-    # Get all directories that contain a metadata.json file
-    track_dirs = [d for d in aria_path.iterdir() 
-                  if d.is_dir() and (d / "metadata.json").exists()]
-    
-    track_dirs = sorted(track_dirs)
-    
-    if limit:
-        track_dirs = track_dirs[:limit]
-        logger.info(f"Limited to {len(track_dirs)} tracks")
-    else:
-        logger.info(f"Found {len(track_dirs)} tracks in {aria_path}")
-    
-    return track_dirs
-
-
-def get_mix_files(track_path: Path, codec: Optional[str] = None) -> List[Tuple[Path, Dict]]:
+def get_mix_files(track: Track, codec: Optional[str] = None) -> List[Tuple[Path, MixSpec]]:
     """
-    Get all mix files for a track, with their metadata.
-    
+    Get all pre-computed mix files (any audio format) for a track.
+
     Returns:
-        List of (mix_path, mix_metadata) tuples
+        List of (mix_path, mix_spec) tuples
     """
-    mixes_path = track_path / "mixes"
+    mixes_path = track.path / "mixes"
     if not mixes_path.exists():
         logger.debug(f"Mixes directory not found: {mixes_path}")
         return []
-    
-    mix_files = []
-    
-    # If codec specified, only process that codec
+
     if codec:
-        codec_dirs = [mixes_path / codec] if (mixes_path / codec).exists() else []
+        codecs = [codec]
     else:
-        # Get all codec directories
-        codec_dirs = [d for d in mixes_path.iterdir() if d.is_dir()]
-    
-    for codec_dir in codec_dirs:
-        codec_name = codec_dir.name
-        
-        # Iterate through U0, U1, U2, ... folders
-        for u_dir in sorted(codec_dir.iterdir()):
-            if not u_dir.is_dir() or not u_dir.name.startswith("U"):
-                continue
-            
-            num_ai_stems = int(u_dir.name[1:])  # Extract number from "U2" -> 2
-            
-            # Get all mix files in this U folder
-            for mix_file in sorted(u_dir.glob("mix_S-*.wav")):
-                # Parse the filename to get AI stem indices
-                # Format: mix_S-0-1-2.wav or mix_S-empty.wav
-                filename = mix_file.stem  # "mix_S-0-1-2"
-                indices_part = filename.split("mix_S-")[1]  # "0-1-2" or "empty"
-                
-                if indices_part == "empty":
-                    ai_indices = []
-                else:
-                    ai_indices = [int(x) for x in indices_part.split("-")]
-                
-                # Create metadata dict
-                metadata = {
-                    "codec": codec_name,
-                    "num_ai_stems": num_ai_stems,
-                    "ai_stem_indices": ai_indices,
-                }
-                
-                mix_files.append((mix_file, metadata))
-    
+        codecs = sorted(d.name for d in mixes_path.iterdir() if d.is_dir())
+
+    mix_files = []
+    for codec_name in codecs:
+        for spec in generate_all_mix_specs(track.num_stems, codec_name):
+            mix_path = find_mix_path(track, spec)
+            if mix_path is not None:
+                mix_files.append((mix_path, spec))
+
     return mix_files
 
 
@@ -245,9 +185,9 @@ def load_and_preprocess_audio(audio_path: Path, target_sr: int, audio_slice_sec:
 
 def process_mix(
     mix_path: Path, 
-    mix_metadata: Dict,
-    track_metadata: Dict,
-    model, 
+    mix_spec: MixSpec,
+    track: Track,
+model, 
     augmenter, 
     global_conf: Dict,
 ) -> Dict:
@@ -311,14 +251,14 @@ def process_mix(
         result = {
             "file": mix_path.name,
             "path": str(mix_path),
-            "track_id": track_metadata.get("id", mix_path.parent.parent.parent.parent.name),
-            "num_stems": track_metadata.get("number_of_stems", len(track_metadata.get("stems", []))),
-            "stem_names": track_metadata.get("stems", []),
-            
+            "track_id": track.id,
+            "num_stems": track.num_stems,
+            "stem_names": track.stem_names,
+
             # Mix metadata
-            "num_ai_stems": mix_metadata["num_ai_stems"],
-            "ai_stem_indices": mix_metadata["ai_stem_indices"],
-            "ai_codec": mix_metadata["codec"],
+            "num_ai_stems": mix_spec.num_ai_stems,
+            "ai_stem_indices": list(mix_spec.ai_indices),
+            "ai_codec": mix_spec.codec,
             
             # Detection results
             "real_probability": real_prob_mean,
@@ -347,15 +287,21 @@ def process_mix(
         return {
             "file": mix_path.name,
             "path": str(mix_path),
-            "track_id": track_metadata.get("track_id", "unknown"),
+            "track_id": track.id,
             "error": str(e),
             "prediction": "error"
         }
 
 
-def load_model(config_name: str, weights_path: str):
-    """Load the Deezer deepfake detector model."""
-    # Load config
+def load_model(detector_path: str, config_name: str, weights_path: str):
+    """Load the Deezer deepfake detector model from its repository checkout."""
+    sys.path.insert(0, detector_path)
+    from loader.audio import EvalAugmenter
+    from loader.config import ConfLoader
+    from loader.global_variables import CONF_PATH, WEIGHTS_PATH
+    from model.simple_cnn import SimpleCNN, SimpleSpectrogramCNN
+
+# Load config
     configuration = ConfLoader(CONF_PATH)
     configuration.load_model(config_name)
     global_conf = configuration.conf
@@ -441,7 +387,7 @@ def main():
     
     # Load model
     logger.info("\nLoading model...")
-    model, augmenter, global_conf = load_model(args.config, args.weights)
+    model, augmenter, global_conf = load_model(args.detector_path, args.config, args.weights)
     
     logger.info(f"Model configuration:")
     logger.info(f"  Sample rate: {global_conf['sr']} Hz")
@@ -451,7 +397,10 @@ def main():
     logger.info(f"  Effects: {global_conf.get('effects', 'N/A')}")
     
     # Get track directories
-    track_dirs = get_track_directories(aria_path, args.limit)
+    track_dirs = iter_track_dirs(aria_path)
+    if args.limit:
+        track_dirs = track_dirs[:args.limit]
+    logger.info(f"Processing {len(track_dirs)} tracks in {aria_path}")
     
     if not track_dirs:
         logger.error("No tracks found!")
@@ -465,14 +414,8 @@ def main():
     # Create/open output file
     with open(output_file, 'w') as f:
         for track_dir in tqdm(track_dirs, desc="Processing tracks"):
-            # Load track metadata
-            track_metadata = load_track_metadata(track_dir)
-            if not track_metadata:
-                logger.warning(f"Skipping track without metadata: {track_dir.name}")
-                continue
-            
-            # Get mix files
-            mix_files = get_mix_files(track_dir, args.codec)
+            track = load_track(track_dir)
+            mix_files = get_mix_files(track, args.codec)
             
             if not mix_files:
                 logger.debug(f"No mixes found for track: {track_dir.name}")
@@ -481,11 +424,11 @@ def main():
             total_mixes += len(mix_files)
             
             # Process each mix
-            for mix_path, mix_metadata in tqdm(mix_files, desc=f"  {track_dir.name}", leave=False):
+            for mix_path, mix_spec in tqdm(mix_files, desc=f"  {track_dir.name}", leave=False):
                 result = process_mix(
                     mix_path,
-                    mix_metadata,
-                    track_metadata,
+                    mix_spec,
+                    track,
                     model,
                     augmenter,
                     global_conf

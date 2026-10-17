@@ -2,28 +2,34 @@
 Audio I/O utilities.
 
 Pure functions for loading, saving, and processing audio.
-Uses soundfile for I/O (consistent with existing codebase).
+Uses soundfile for I/O; MP3 encoding goes through the ffmpeg binary.
 """
 
+import shutil
+import subprocess
+import tempfile
+from math import gcd
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import soundfile as sf
 
+from aria.constants import MP3_BITRATE_KBPS
 from aria.exceptions import AudioLoadError
 
 
 def load_audio(
     path: Path | str,
     target_sr: int | None = None,
-) -> Tuple[np.ndarray, int]:
+    stereo: bool = False,
+) -> tuple[np.ndarray, int]:
     """Load audio from file.
 
     Args:
         path: Path to audio file.
         target_sr: Target sample rate. If provided and different from file's
             sample rate, audio will be resampled.
+        stereo: If True, return exactly two channels (see to_stereo).
 
     Returns:
         Tuple of (audio, sample_rate).
@@ -39,7 +45,7 @@ def load_audio(
 
     try:
         # soundfile loads as (samples, channels)
-        audio, sr = sf.read(path, always_2d=True)
+        audio, sr = sf.read(path, always_2d=True, dtype="float32")
         # Transpose to (channels, samples)
         audio = audio.T
     except Exception as e:
@@ -50,6 +56,9 @@ def load_audio(
         audio = resample(audio, sr, target_sr)
         sr = target_sr
 
+    if stereo:
+        audio = to_stereo(audio)
+
     return audio, sr
 
 
@@ -57,35 +66,81 @@ def save_audio(
     path: Path | str,
     audio: np.ndarray,
     sample_rate: int,
-    format: str = "flac",
+    format: str | None = None,
     subtype: str | None = None,
+    mp3_bitrate: int = MP3_BITRATE_KBPS,
 ) -> None:
     """Save audio to file.
 
     Args:
-        path: Output path.
+        path: Output path. Its extension must match ``format``.
         audio: Audio array of shape (channels, samples).
         sample_rate: Sample rate.
-        format: Audio format ("wav", "flac", "mp3").
-        subtype: Subtype for format (e.g., "PCM_16", "PCM_24").
+        format: Audio format ("wav", "flac", "mp3"). Inferred from the path
+            extension when omitted.
+        subtype: Subtype for wav/flac (e.g., "PCM_16", "PCM_24").
+        mp3_bitrate: Constant bitrate in kbps for MP3 output.
+
+    Raises:
+        ValueError: If format and path extension disagree.
     """
     path = Path(path)
+    suffix = path.suffix.lstrip(".").lower()
+    format = (format or suffix).lower()
+    if format != suffix:
+        raise ValueError(f"Format {format!r} does not match file extension {path.suffix!r}")
+
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Transpose to (samples, channels) for soundfile
-    audio_to_save = audio.T
+    if format == "mp3":
+        _save_mp3(path, audio, sample_rate, mp3_bitrate)
+        return
 
     # Default subtypes
     if subtype is None:
         subtype = "PCM_24" if format in ("wav", "flac") else None
 
-    sf.write(path, audio_to_save, sample_rate, subtype=subtype)
+    # Transpose to (samples, channels) for soundfile
+    sf.write(path, audio.T, sample_rate, subtype=subtype)
+
+
+def ffmpeg_available() -> bool:
+    """Whether the ffmpeg binary (needed for MP3 output) is on PATH."""
+    return shutil.which("ffmpeg") is not None
+
+
+def _save_mp3(path: Path, audio: np.ndarray, sample_rate: int, bitrate_kbps: int) -> None:
+    """Encode audio to CBR MP3 via ffmpeg, using a float WAV intermediary."""
+    if not ffmpeg_available():
+        raise RuntimeError("ffmpeg is required to write MP3 files but was not found in PATH")
+
+    bitrate_kbps = min(int(bitrate_kbps), 320)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp_file:
+        sf.write(tmp_file.name, audio.T, sample_rate, subtype="FLOAT")
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                tmp_file.name,
+                "-c:a",
+                "mp3",
+                "-b:a",
+                f"{bitrate_kbps}k",
+                str(path),
+            ],
+            check=True,
+        )
 
 
 def resample(audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
     """Resample audio to target sample rate.
 
-    Uses scipy for resampling (simple and dependency-light).
+    Uses polyphase filtering (scipy.signal.resample_poly).
 
     Args:
         audio: Audio array of shape (channels, samples).
@@ -100,13 +155,24 @@ def resample(audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
 
     from scipy import signal
 
-    # Calculate new length
-    new_length = int(audio.shape[-1] * to_sr / from_sr)
-
-    # Resample each channel
-    resampled = signal.resample(audio, new_length, axis=-1)
+    divisor = gcd(from_sr, to_sr)
+    resampled = signal.resample_poly(audio, to_sr // divisor, from_sr // divisor, axis=-1)
 
     return resampled.astype(audio.dtype)
+
+
+def to_stereo(audio: np.ndarray) -> np.ndarray:
+    """Return exactly two channels: mono is duplicated, extra channels dropped.
+
+    Args:
+        audio: Audio array of shape (channels, samples).
+
+    Returns:
+        Audio array of shape (2, samples).
+    """
+    if audio.shape[0] == 1:
+        return np.concatenate([audio, audio], axis=0)
+    return audio[:2]
 
 
 def pad_to_length(audio: np.ndarray, target_length: int) -> np.ndarray:
@@ -153,5 +219,3 @@ def sum_stems(stems: list[np.ndarray]) -> np.ndarray:
     mixed = np.sum(padded, axis=0)
 
     return mixed
-
-
