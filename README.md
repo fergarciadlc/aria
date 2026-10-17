@@ -1,12 +1,14 @@
 # ARIA
 
-**Authentic vs Reconstructed Isolated Audio** — a dataset and Python library for telling real music stems from AI-reconstructed ones, alone and mixed together.
+**Authentic vs Reconstructed Isolated Audio** — a Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
 
-ARIA takes the 240 multitrack songs of [MoisesDB](https://github.com/moises-ai/moises-db), runs every stem through [Encodec](https://github.com/facebookresearch/encodec) at 3, 6 and 24 kbps, and provides every real/AI combination of each song's stems as a mix. Use it to train and benchmark detectors of AI-generated or partially AI-generated music.
+Starting from any multitrack corpus with isolated stems, ARIA reconstructs every stem with a neural codec, builds every real/AI combination of each song's stems as a mix, and labels each mix with which stems are AI (split manifests can also carry the AI energy ratio α from per-mix metrics). Use it to train and benchmark detectors of fully or partially AI-generated music.
+
+The method is corpus- and codec-agnostic. The reference build, used in the [ISMIR 2026 paper](#citation), is [MoisesDB](https://github.com/moises-ai/moises-db) (240 songs) reconstructed with [Encodec](https://github.com/facebookresearch/encodec); the scripts generate 3, 6 and 24 kbps. ARIA ships code only: you build the dataset from your own copy of the corpus.
 
 ```mermaid
 flowchart LR
-    M[(MoisesDB)] -->|prepare_moisesdb| R[real stems]
+    M[(multitrack corpus<br/>e.g. MoisesDB)] -->|corpus adapter<br/>prepare_moisesdb| R[real stems]
     R -->|generate_ai_stems| A[AI stems<br/>encodec_3 / 6 / 24]
     R & A -->|generate_mixes| X[mixes<br/>all 2ⁿ combinations]
     X -->|create_splits| S[split manifest<br/>train / val / test]
@@ -52,7 +54,8 @@ aria/
 
 - **Stem indices** refer to the track's stem names in **alphabetical order** (`Track.stem_names`). For `bass, drums, guitar, vocals`, `mix_S-1` has AI drums.
 - `U{k}` holds the C(n, k) mixes with exactly k AI stems; a track with n stems has 2ⁿ mixes per codec.
-- **Audio:** 44.1 kHz stereo. AI stems and mixes are 256 kbps MP3. AI stems were made in Encodec's *replicate* mode (44.1 kHz audio fed to the 48 kHz model unresampled) — see [scripts/README.md](scripts/README.md).
+- **Audio:** 44.1 kHz stereo. AI stems and mixes are 256 kbps MP3. The reference build uses Encodec's *replicate* mode (44.1 kHz audio fed to the 48 kHz model unresampled) — see [scripts/README.md](scripts/README.md).
+- **Other corpora:** anything that can be written in this layout (a `metadata.json` with the stem names, plus `stems/real/`) works with every later step. `prepare_moisesdb.py` is the MoisesDB adapter; corpora such as MUSDB18 or Slakh need an equivalent.
 - Mixes are optional on disk: the library computes any mix from the stems.
 
 ## Quick start
@@ -152,6 +155,8 @@ If you use ARIA, please cite the ISMIR 2026 paper ([arXiv:2608.07285](https://ar
 
 ## License
 
-Code: MIT. ARIA's audio derives from MoisesDB and is subject to its license.
+[MIT](LICENSE). This repository contains code only, no audio or corpus data.
 
-Built on [MoisesDB](https://github.com/moises-ai/moises-db) stems and [Encodec](https://github.com/facebookresearch/encodec).
+Stems and mixes you build with ARIA are derived from your source corpus and remain under its license. For MoisesDB that is [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (non-commercial, share-alike).
+
+The reference build uses [MoisesDB](https://github.com/moises-ai/moises-db) stems and [Encodec](https://github.com/facebookresearch/encodec).

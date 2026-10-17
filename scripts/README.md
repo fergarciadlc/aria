@@ -1,6 +1,8 @@
 # Dataset creation scripts
 
-Maintainer tools that build ARIA from [MoisesDB](https://github.com/moises-ai/moises-db). They are thin CLIs over the `aria` library, which defines the layout, naming, stem order and audio spec (`aria/constants.py`).
+Tools that build an ARIA dataset from a multitrack corpus. They are thin CLIs over the `aria` library, which defines the layout, naming, stem order and audio spec (`aria/constants.py`).
+
+Only step 1 is corpus-specific: `prepare_moisesdb.py` is the adapter for [MoisesDB](https://github.com/moises-ai/moises-db), the reference corpus. For another corpus, write each track as `{id}/metadata.json` (with a `stems` list) and `{id}/stems/real/{stem}.wav`; steps 2–4 then work unchanged.
 
 ```bash
 pip install -r requirements.txt   # library with all extras + moises-db
