@@ -1,10 +1,12 @@
 # ARIA
 
+This is the dataset code used for the ISMIR 2026 paper [*How Much AI Is in This Track?*](https://arxiv.org/abs/2608.07285) and for the [MSc thesis](https://zenodo.org/records/23186445). The [companion website](https://fergarciadlc.github.io/ismir26-how-much-ai/) presents the results, and [detector-models](https://github.com/fergarciadlc/detector-models) holds the detector training code.
+
 **Authentic vs Reconstructed Isolated Audio** is a Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
 
 Starting from any multitrack corpus with isolated stems, ARIA reconstructs every stem with a neural codec, builds every real/AI combination of each song's stems as a mix, and labels each mix with which stems are AI (split manifests can also carry the AI energy ratio α from per-mix metrics). Use it to train and benchmark detectors of fully or partially AI-generated music.
 
-The method is corpus- and codec-agnostic. The reference build, used in the [ISMIR 2026 paper](#citation), is [MoisesDB](https://github.com/moises-ai/moises-db) (240 songs) reconstructed with [Encodec](https://github.com/facebookresearch/encodec); the scripts generate 3, 6 and 24 kbps. ARIA ships code only: you build the dataset from your own copy of the corpus.
+The method is corpus- and codec-agnostic. The reference build, used in the [ISMIR 2026 paper](https://arxiv.org/abs/2608.07285), is [MoisesDB](https://github.com/moises-ai/moises-db) (240 songs) reconstructed with [Encodec](https://github.com/facebookresearch/encodec); the scripts generate 3, 6 and 24 kbps. ARIA ships code only: you build the dataset from your own copy of the corpus.
 
 ```mermaid
 flowchart LR
@@ -155,6 +157,13 @@ If you use ARIA, please cite the ISMIR 2026 paper ([arXiv:2608.07285](https://ar
   year          = {2026},
 }
 ```
+
+Related resources:
+
+- Paper: [arXiv:2608.07285](https://arxiv.org/abs/2608.07285)
+- MSc thesis: [Zenodo](https://zenodo.org/records/23186445)
+- Companion website: [fergarciadlc.github.io/ismir26-how-much-ai](https://fergarciadlc.github.io/ismir26-how-much-ai/)
+- Detector training code: [detector-models](https://github.com/fergarciadlc/detector-models)
 
 ## License
 
