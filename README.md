@@ -1,6 +1,6 @@
 # ARIA
 
-**Authentic vs Reconstructed Isolated Audio** — a Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
+**Authentic vs Reconstructed Isolated Audio** is a Python library for building and loading hybrid music mixtures in which some stems are real and some are AI-reconstructed.
 
 Starting from any multitrack corpus with isolated stems, ARIA reconstructs every stem with a neural codec, builds every real/AI combination of each song's stems as a mix, and labels each mix with which stems are AI (split manifests can also carry the AI energy ratio α from per-mix metrics). Use it to train and benchmark detectors of fully or partially AI-generated music.
 
@@ -54,7 +54,7 @@ aria/
 
 - **Stem indices** refer to the track's stem names in **alphabetical order** (`Track.stem_names`). For `bass, drums, guitar, vocals`, `mix_S-1` has AI drums.
 - `U{k}` holds the C(n, k) mixes with exactly k AI stems; a track with n stems has 2ⁿ mixes per codec.
-- **Audio:** 44.1 kHz stereo. AI stems and mixes are 256 kbps MP3. The reference build uses Encodec's *replicate* mode (44.1 kHz audio fed to the 48 kHz model unresampled) — see [scripts/README.md](scripts/README.md).
+- **Audio:** 44.1 kHz stereo. AI stems and mixes are 256 kbps MP3. The reference build uses Encodec's *replicate* mode (44.1 kHz audio fed to the 48 kHz model unresampled); see [scripts/README.md](scripts/README.md).
 - **Other corpora:** anything that can be written in this layout (a `metadata.json` with the stem names, plus `stems/real/`) works with every later step. `prepare_moisesdb.py` is the MoisesDB adapter; corpora such as MUSDB18 or Slakh need an equivalent.
 - Mixes are optional on disk: the library computes any mix from the stems.
 
@@ -111,7 +111,7 @@ for batch in loader:
 | `ratio` | fraction of AI stems |
 | `energy_ratio` | energy share of AI stems (manifest with energy metrics only) |
 
-Without a manifest, `mix_sampling` picks the mixes per track: `all` (2ⁿ), `binary` (all-real and all-AI only) or `balanced` (one random mix per number of AI stems). Labels are imbalanced towards AI; `get_class_weights()` gives inverse-frequency weights for `binary`. Crops use torch's RNG — call `torch.manual_seed()` for reproducible runs.
+Without a manifest, `mix_sampling` picks the mixes per track: `all` (2ⁿ), `binary` (all-real and all-AI only) or `balanced` (one random mix per number of AI stems). Labels are imbalanced towards AI; `get_class_weights()` gives inverse-frequency weights for `binary`. Crops use torch's RNG, so call `torch.manual_seed()` for reproducible runs.
 
 Splits assign whole tracks to train/val/test, so no song appears in two splits. Each manifest record carries `track_id`, `ai_indices`, `num_ai_stems`, `ai_stem_ratio`, `ai_energy_ratio`, `duration` and `mix_path`.
 
@@ -155,7 +155,7 @@ If you use ARIA, please cite the ISMIR 2026 paper ([arXiv:2608.07285](https://ar
 
 ## License
 
-[MIT](LICENSE). This repository contains code only, no audio or corpus data.
+[MIT](LICENSE). The repository contains only code.
 
 Stems and mixes you build with ARIA are derived from your source corpus and remain under its license. For MoisesDB that is [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (non-commercial, share-alike).
 

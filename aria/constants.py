@@ -2,7 +2,7 @@
 Canonical ARIA dataset specification.
 
 Single source of truth for the values shared by the library and the
-dataset-creation scripts. Change them here, not in individual scripts.
+dataset-creation scripts. Change them here and every script follows.
 """
 
 # Sample rate of real stems, AI stems and mixes on disk.

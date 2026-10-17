@@ -2,7 +2,7 @@
 
 Run existing AI-music detectors on ARIA mixes.
 
-## `aria_deepfake_inference.py` — Deezer detector
+## `aria_deepfake_inference.py`: Deezer detector
 
 Runs the Deezer deepfake detector on every pre-computed mix (`mixes/{codec}/U{k}/mix_S-*`, any audio format) and writes one JSON line per mix.
 
@@ -22,7 +22,7 @@ Each line holds the mix (`file`, `path`, `track_id`, `ai_codec`), its ground tru
 
 > `stem_names` is in index order (alphabetical): every value in `ai_stem_indices` is a position in `stem_names`. Result files produced before the library consolidation (PR #1) listed `stem_names` in metadata order instead; don't map their indices to names.
 
-## `spectttra_inference.py` — SONICS SpecTTTra
+## `spectttra_inference.py`: SONICS SpecTTTra
 
 Generic (not ARIA-aware) inference with the [SONICS](https://github.com/awsaf49/sonics) SpecTTTra models on a file or a directory. Needs `librosa` and the `sonics` package (install it from the SONICS repository).
 

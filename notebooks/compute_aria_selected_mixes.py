@@ -1,7 +1,7 @@
 """Compute Deezer "fakeprints" for the encodec_3 mixes of selected ARIA tracks.
 
 Uses compute_fakeprints.py from a checkout of
-https://github.com/deezer/ismir25-ai-music-detector (CC BY-NC 4.0, not vendored here).
+https://github.com/deezer/ismir25-ai-music-detector (CC BY-NC 4.0; the code is not included in this repo).
 
 Usage:
     python notebooks/compute_aria_selected_mixes.py --aria-path /path/to/aria \\
