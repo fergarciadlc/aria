@@ -138,7 +138,7 @@ class EncodecGenerator:
             model_input = resample(audio, sr, self.MODEL_SAMPLE_RATE)
 
         # In replicate mode the processor is told the audio is 48 kHz even
-        # though it isn't — that is the documented dataset recipe.
+        # though it is 44.1 kHz. This is the documented dataset recipe.
         inputs = self._processor(
             raw_audio=model_input,
             sampling_rate=self._processor.sampling_rate,

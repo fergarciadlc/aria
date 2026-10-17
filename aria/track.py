@@ -2,7 +2,7 @@
 Track representation for ARIA dataset.
 
 Track is a dataclass containing metadata and path information.
-Loading audio is done via functions, not methods (separation of concerns).
+Audio is loaded by module-level functions (separation of concerns).
 
 On-disk layout of a track:
     {root}/{track_id}/metadata.json

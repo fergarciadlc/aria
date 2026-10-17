@@ -2,13 +2,13 @@
 Create train/val/test split manifests for the ARIA dataset.
 
 Splits are performed at the track level (stratified by num_stems) so that
-all mixes from a given track land in the same partition — preventing any
+all mixes from a given track land in the same partition, which prevents
 leakage of audio content across splits. The manifest schema lives in
 aria/splits.py.
 
 Output:
-    <output>.jsonl          — JSONL manifest, one mix record per line
-    <output>.meta.json      — split statistics and provenance metadata
+    <output>.jsonl          : JSONL manifest, one mix record per line
+    <output>.meta.json      : split statistics and provenance metadata
 
 Usage:
     python scripts/create_splits.py --aria-path /path/to/aria --output splits/canonical_v2.jsonl
