@@ -427,7 +427,7 @@ python scripts/generate_mixes.py \
     --model encodec_3
 ```
 
-See [scripts/README.md](scripts/README.md) for generation scripts and [docs/packaging.md](docs/packaging.md) for creating distribution packages.
+See [scripts/README.md](scripts/README.md) for generation scripts , including packaging releases.
 
 ---
 
