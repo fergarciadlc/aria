@@ -1,3 +1,7 @@
-loguru
-tqdm
+# Library, all extras and dev tools (see pyproject.toml)
+-e .[all]
+
+# scripts/prepare_moisesdb.py
 git+https://github.com/moises-ai/moises-db.git
+
+# MP3 output (AI stems, mixes, packaging) also needs the ffmpeg binary on PATH.
