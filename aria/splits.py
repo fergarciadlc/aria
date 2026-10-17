@@ -764,3 +764,110 @@ def window_manifest_summary(
     if window_sec is not None:
         summary["window_sec"] = window_sec
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Track-to-split assignment: reuse an existing split or split deterministically
+# ---------------------------------------------------------------------------
+
+
+def split_tracks(
+    tracks: Iterable[Track],
+    train_ratio: float,
+    val_ratio: float,
+    seed: int,
+) -> dict[str, str]:
+    """Stratified track split that does not depend on input order.
+
+    stratified_split_by_num_stems() shuffles each stem-count group, so its
+    result depends on the order the tracks arrive in. Directory listing order
+    differs between filesystems, so this wrapper feeds the tracks in sorted
+    track-id order. The same corpus and seed then give the same split on any
+    machine.
+
+    The split used in the paper cannot be regenerated this way: it was made
+    from an unsorted directory listing on the training machine. Reuse it with
+    read_track_splits() (the --split-from option of scripts/create_splits.py).
+    """
+    ordered = sorted(tracks, key=lambda t: t.id)
+    return stratified_split_by_num_stems(ordered, train_ratio, val_ratio, seed)
+
+
+def read_track_splits(path: Path | str) -> dict[str, str]:
+    """Read the track to split mapping from an existing manifest.
+
+    Works on any manifest flavour (per-mix v1/v2/v3 or window manifest): only
+    ``track_id`` and ``split`` are read from each line.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If a line is invalid, names an unknown split, or a track
+            is assigned to more than one split.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Reference manifest not found: {path}")
+
+    mapping: dict[str, str] = {}
+    with open(path) as f:
+        for lineno, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                track_id, split = row["track_id"], row["split"]
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON on line {lineno} of {path}: {e}") from e
+            except KeyError as e:
+                raise ValueError(f"Missing field {e} on line {lineno} of {path}") from e
+            if split not in SPLITS:
+                raise ValueError(
+                    f"Unknown split {split!r} on line {lineno} of {path}"
+                )
+            if mapping.setdefault(track_id, split) != split:
+                raise ValueError(
+                    f"Track {track_id} is in both {mapping[track_id]!r} and "
+                    f"{split!r} (line {lineno} of {path})"
+                )
+    return mapping
+
+
+def assign_reference_splits(
+    tracks: Iterable[Track],
+    reference: dict[str, str],
+    allow_missing: bool = False,
+) -> dict[str, str]:
+    """Look up each track's split in a reference mapping.
+
+    Args:
+        tracks: Tracks of the dataset being processed.
+        reference: Mapping from track_id to split, e.g. from
+            read_track_splits().
+        allow_missing: When False (default), a track absent from the
+            reference raises. When True it is left out of the result and the
+            caller should drop it.
+
+    Returns:
+        Mapping from track_id to split for the tracks found in the reference.
+        Reference tracks that are not on disk are ignored, with a warning.
+
+    Raises:
+        ValueError: If a track is missing from the reference and
+            allow_missing is False.
+    """
+    tracks = list(tracks)
+    assignment = {t.id: reference[t.id] for t in tracks if t.id in reference}
+
+    missing = [t.id for t in tracks if t.id not in reference]
+    if missing and not allow_missing:
+        preview = ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
+        raise ValueError(
+            f"{len(missing)} track(s) are not in the reference split: {preview}"
+        )
+    if missing:
+        logger.warning("Leaving out %d track(s) absent from the reference", len(missing))
+
+    unused = len(set(reference) - {t.id for t in tracks})
+    if unused:
+        logger.warning("%d reference track(s) are not in the dataset", unused)
+    return assignment
