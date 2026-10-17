@@ -11,7 +11,9 @@ flowchart LR
     M[(multitrack corpus<br/>e.g. MoisesDB)] -->|corpus adapter<br/>prepare_moisesdb| R[real stems]
     R -->|generate_ai_stems| A[AI stems<br/>encodec_3 / 6 / 24]
     R & A -->|generate_mixes| X[mixes<br/>all 2ⁿ combinations]
+    R & A -->|compute_metrics| E[energy metrics<br/>AI energy ratio α]
     X -->|create_splits| S[split manifest<br/>train / val / test]
+    E -.->|optional| S
 
     R & A --> L{{aria library}}
     X & S --> L
@@ -27,6 +29,7 @@ git clone https://github.com/fergarciadlc/aria.git
 cd aria
 pip install -e .            # library: numpy, scipy, soundfile, tqdm
 pip install -e ".[torch]"   # + PyTorch dataset
+pip install -e ".[metrics]" # + librosa, for energy metrics (scripts/compute_metrics.py)
 pip install -r requirements.txt   # everything, incl. dataset creation tools
 ```
 

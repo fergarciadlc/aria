@@ -19,6 +19,7 @@ MP3 output needs `ffmpeg` on `PATH`.
 | 2 | `generate_ai_stems.py` | `{id}/stems/ai_generated/encodec_{3,6,24}/{stem}.mp3` |
 | 3 | `generate_mixes.py` | `{id}/mixes/{codec}/U{k}/mix_S-*.mp3` + `.json` sidecar |
 | 4 | `create_splits.py` | `splits/{name}.jsonl` + `{name}.meta.json` |
+| – | `compute_metrics.py` | `metrics/stem_metrics.csv`, `metrics/mix_metrics.csv` |
 | – | `create_metadata_csv.py` | one-row-per-track CSV |
 
 ```bash
@@ -49,6 +50,23 @@ Builds all 2ⁿ real/AI combinations for one codec (`--codec`) with `aria.mix.co
 ### 4. `create_splits.py`
 
 Assigns whole tracks to train/val/test (default 80/10/10, stratified by stem count, `--seed`) and writes one record per pre-computed mix. If `{ARIA_ROOT}/metrics/mix_metrics.csv` exists (or `--metrics-csv` is given), records also carry `ai_energy_ratio`. The record schema is documented in `aria/splits.py`.
+
+### `compute_metrics.py`
+
+Measures the energy of every real and AI stem and derives the AI energy ratio of every mix, α = Σ RMS² of AI stems / Σ RMS² of all stems. Needs the `metrics` extra (`pip install -e ".[metrics]"`). This is the computation behind the regression targets, ported from the original training-machine script; it reproduces its numbers and column order.
+
+```bash
+python scripts/compute_metrics.py --codecs encodec_3                          # one row per file and mix
+python scripts/compute_metrics.py --window 5 --workers 8 --output-dir metrics_5s   # per 5 s window
+```
+
+Options: `--codecs` (default `encodec_3`), `--window SECONDS`, `--output-dir` (default `{aria_path}/metrics`), `--workers`, `--overwrite`. Run `create_splits.py` after it to put α in the manifest (it reads `metrics/mix_metrics.csv`).
+
+- **Stem stage** reads audio with `librosa.load(sr=None, mono=True)`, the loader of the original run (another decoder would shift α slightly), and writes `stem_metrics.csv`: `uuid, stem_index, stem_name, variant, codec, file_path, rms, rms_db, duration_sec, window_start_sec, window_end_sec, is_partial, error`. If the file exists it is reused, so a long run can be resumed into the mix stage; `--overwrite` recomputes it. A file that cannot be read gets one row with the message in `error`.
+- **Mix stage** reads no audio. It sums stem powers per window and writes `mix_metrics.csv`: `audio_path, uuid, codec, n_ai_stems, n_total_stems, window_start_sec, window_end_sec, ai_power, real_power, total_power, ai_energy_ratio, missing_stems`. `audio_path` is the absolute mix path; `create_splits.py` keys on its last 5 components. There is no `is_partial` column here (the stem CSV has it).
+- **Windows.** With `--window N`, windows are N seconds long (`round(N * sr)` samples), non-overlapping, from t=0. The trailing partial window is dropped. A stem shorter than N seconds gives one row covering its whole duration with `is_partial=True` (a warning is logged). Without `--window`, each file is one row.
+- **Silent windows.** When every stem is silent in a window, `total_power` is 0 and `ai_energy_ratio` is empty (NaN). Readers decide how to treat them; `load_energy_metrics` turns an empty value into 0.0.
+- **Missing stems.** A stem with no file or a read error is skipped and the mix's rows get `missing_stems=True`, so α for those rows covers only the stems found.
 
 ## Conventions
 
