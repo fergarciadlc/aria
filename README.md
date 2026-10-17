@@ -135,11 +135,18 @@ pytest
 
 ## Citation
 
+If you use ARIA, please cite the ISMIR 2026 paper ([arXiv:2608.07285](https://arxiv.org/abs/2608.07285)):
+
 ```bibtex
-@dataset{aria,
-  title  = {ARIA: Authentic vs Reconstructed Isolated Audio Dataset},
-  author = {...},
-  url    = {https://github.com/fergarciadlc/aria}
+@inproceedings{garciadelacruz2026howmuchai,
+  title         = {How Much {AI} Is in This Track? Quantifying the Proportion
+                   of {AI}-Generated Stems in Hybrid Music Mixtures},
+  author        = {Garcia de la Cruz, Fernando and L{\'o}pez-Ayala, David and
+                   Zinemanas, Pablo and Molina, Emilio and Rocamora, Mart{\'i}n},
+  booktitle     = {Proceedings of the 27th International Society for
+                   Music Information Retrieval Conference (ISMIR)},
+  address       = {Abu Dhabi, UAE},
+  year          = {2026},
 }
 ```
 
