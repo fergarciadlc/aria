@@ -3,7 +3,7 @@ Split manifests for the ARIA dataset.
 
 A manifest is a JSONL file where each line is one pre-computed mix with its
 labels and split assignment (train/val/test). Tracks are the atomic split
-unit — all mixes from a track land in the same split to prevent leakage.
+unit: all mixes from a track land in the same split to prevent leakage.
 
 Record schema (one JSON object per line):
     track_id, artist, track_name, genre, codec,

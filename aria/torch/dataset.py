@@ -58,8 +58,8 @@ class MixSample:
         mix_spec: Mix specification.
         label: Label value (interpretation depends on label_mode).
         mix_path: Absolute path to a pre-computed mix file. When set,
-            audio is loaded directly from this path instead of computing
-            on-the-fly from stems.
+            audio is loaded directly from this path; otherwise it is
+            computed on-the-fly from stems.
     """
 
     track_id: str
@@ -133,7 +133,7 @@ class ARIATorchDataset(Dataset):
             seed: Seed for "balanced" mix selection.
             manifest: Optional SplitManifest. When provided, samples are
                 loaded directly from the manifest (with pre-computed mix
-                paths) rather than discovered from the dataset directory.
+                paths); the dataset directory is not scanned for mixes.
                 mix_sampling is ignored in this mode.
             split: Split partition to use from the manifest ("train", "val",
                 or "test"). Required when manifest is provided.

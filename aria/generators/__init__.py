@@ -1,7 +1,7 @@
 """
 Generators for creating AI-reconstructed stems.
 
-These are used for dataset creation, not for loading. Model dependencies
+These are used for dataset creation only. Model dependencies
 (torch, transformers) are imported lazily; install the ``generators`` extra.
 """
 

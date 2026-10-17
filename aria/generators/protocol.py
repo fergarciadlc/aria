@@ -1,7 +1,7 @@
 """
 Protocol for audio generators.
 
-Using Protocol (structural subtyping) instead of ABC for flexibility.
+Protocol (structural subtyping) keeps generators flexible: any class with the right methods qualifies.
 """
 
 from typing import Protocol
