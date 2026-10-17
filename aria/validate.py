@@ -6,9 +6,17 @@ Functions to check dataset integrity and completeness.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from aria.track import Track, get_stem_path, get_available_codecs, load_track
 from aria.exceptions import MissingStemError
+from aria.track import (
+    Track,
+    get_available_codecs,
+    get_stem_path,
+    is_track_dir,
+    iter_track_dirs,
+    load_track,
+)
 
 
 @dataclass
@@ -86,7 +94,7 @@ def validate_track(
     if check_ai_stems:
         available = get_available_codecs(track)
         
-        if not available:
+        if not available and not codecs:
             result.add_warning(f"No AI stems found for {track.display_name}")
         else:
             codecs_to_check = codecs if codecs else available
@@ -132,16 +140,12 @@ def validate_dataset_path(path: Path | str) -> ValidationResult:
         result.add_error(f"Dataset path is not a directory: {path}")
         return result
     
-    # Find track directories
-    track_dirs = [d for d in path.iterdir() if d.is_dir() and (d / "metadata.json").exists()]
-    
-    if not track_dirs:
+    if not iter_track_dirs(path):
         result.add_error(f"No track directories found in {path}")
         return result
     
     # Check for common issues
-    all_dirs = [d for d in path.iterdir() if d.is_dir()]
-    dirs_without_metadata = [d for d in all_dirs if not (d / "metadata.json").exists()]
+    dirs_without_metadata = [d for d in path.iterdir() if d.is_dir() and not is_track_dir(d)]
     
     for d in dirs_without_metadata:
         if not d.name.startswith("."):  # Ignore hidden dirs
@@ -180,12 +184,9 @@ def validate_dataset(
         return result
     
     # Find and validate tracks
-    track_dirs = sorted([
-        d for d in path.iterdir() 
-        if d.is_dir() and (d / "metadata.json").exists()
-    ])
+    track_dirs = iter_track_dirs(path)
     
-    if limit:
+    if limit is not None:
         track_dirs = track_dirs[:limit]
     
     for track_dir in track_dirs:
@@ -219,14 +220,10 @@ def check_dataset_exists(path: Path | str) -> bool:
         return False
     
     # Look for at least one track with metadata
-    for item in path.iterdir():
-        if item.is_dir() and (item / "metadata.json").exists():
-            return True
-    
-    return False
+    return any(is_track_dir(item) for item in path.iterdir())
 
 
-def get_dataset_summary(path: Path | str) -> dict:
+def get_dataset_summary(path: Path | str) -> dict[str, Any]:
     """Get a quick summary of a dataset.
     
     Args:
@@ -240,16 +237,16 @@ def get_dataset_summary(path: Path | str) -> dict:
     if not check_dataset_exists(path):
         return {"exists": False, "path": str(path)}
     
-    track_dirs = [d for d in path.iterdir() if d.is_dir() and (d / "metadata.json").exists()]
+    track_dirs = iter_track_dirs(path)
     
-    # Sample first track for codec info
-    codecs = []
-    if track_dirs:
-        try:
-            track = load_track(track_dirs[0])
-            codecs = get_available_codecs(track)
-        except Exception:
-            pass
+    # Codec folders present in any track
+    codecs = sorted({
+        d.name
+        for track_dir in track_dirs
+        if (track_dir / "stems" / "ai_generated").exists()
+        for d in (track_dir / "stems" / "ai_generated").iterdir()
+        if d.is_dir()
+    })
     
     return {
         "exists": True,

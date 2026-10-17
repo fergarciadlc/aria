@@ -1,12 +1,21 @@
+"""Compute Deezer "fakeprints" for the encodec_3 mixes of selected ARIA tracks.
+
+Uses compute_fakeprints.py from a checkout of
+https://github.com/deezer/ismir25-ai-music-detector (CC BY-NC 4.0, not vendored here).
+
+Usage:
+    python notebooks/compute_aria_selected_mixes.py --aria-path /path/to/aria \\
+        --fourier-path /path/to/ismir25-ai-music-detector [--output fakeprints]
+"""
+
+import argparse
 import os
 import sys
-import numpy as np
-from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm
+from glob import glob
 
-sys.path.insert(0, os.path.dirname(__file__))
-from compute_fakeprints import fakeprint, spectrogram
+import numpy as np
+from tqdm import tqdm
 
 TRACKS_UUIDS = [
     '098fb51f-2cda-4b3e-ad13-3ead9d0c8474', '10aba683-c3f3-47f5-a973-ec8bab1728c7', '1456630e-375e-4035-b988-316dd7613124', '1506ff5a-965b-42d7-9b30-dec23f0c7708', '16d74cda-230d-4e2d-9523-366e79e46ad5',
@@ -21,20 +30,18 @@ TRACKS_UUIDS = [
     'e049f0af-3c7c-48dc-a0d5-6516b5bb9834', 'e30d586c-a5d7-4d4c-b8c9-62c4a5e1d7db', 'e6593245-97f1-4a8e-ba0d-cf1de1f59a80', 'e6d44e70-5807-4731-8f35-69157857627e', 'f3af46bc-ec7f-4c51-a076-3f213c7d4956',
     'f3b662ee-34ff-4f17-aece-76c5a600d91d', 'fb0885da-1478-4d5c-a507-e969af4f384b', 'fd6b9884-9b0a-4ad5-9ed9-1309677a8777',
 ]
-# TRACKS_UUIDS = ["87632a78-03ba-45e2-bf70-97959f2a0c54"]
 
 
 U_FOLDERS = ['U0', 'U1', 'U2', 'U3', 'U4']
-BASE_PATH = '/media/daveloay/91a7c9e9-247c-4ff8-875e-36cacebd550e/DSs/aria'
-OUTPUT_FOLDER = 'fakeprints'
 SR = 44100
 F_RANGE = [0, 5000]
-MAX_WORKERS = os.cpu_count() - 2
 
 
-def process_one(track_uuid, u_folder):
-    path = os.path.join(BASE_PATH, track_uuid, 'mixes', 'encodec_3', u_folder)
-    save_path = os.path.join(OUTPUT_FOLDER, f'fakeprints_{track_uuid}_{u_folder}.npy')
+def process_one(base_path, output_folder, track_uuid, u_folder):
+    from compute_fakeprints import fakeprint, spectrogram
+
+    path = os.path.join(base_path, track_uuid, 'mixes', 'encodec_3', u_folder)
+    save_path = os.path.join(output_folder, f'fakeprints_{track_uuid}_{u_folder}.npy')
 
     f_list = glob(os.path.join(path, '*.mp3'))
     if not f_list:
@@ -50,16 +57,47 @@ def process_one(track_uuid, u_folder):
     return track_uuid, u_folder, len(f_list)
 
 
+def init_worker(fourier_path):
+    sys.path.insert(0, fourier_path)
+    # compute_fakeprints parses CLI args at import time
+    sys.argv = sys.argv[:1]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        '--aria-path',
+        default=os.environ.get('ARIA_ROOT'),
+        required='ARIA_ROOT' not in os.environ,
+        help='Path to the ARIA dataset (default: $ARIA_ROOT)',
+    )
+    parser.add_argument(
+        '--fourier-path',
+        default=os.environ.get('DEEZER_FOURIER_PATH'),
+        required='DEEZER_FOURIER_PATH' not in os.environ,
+        help='Checkout of deezer/ismir25-ai-music-detector (default: $DEEZER_FOURIER_PATH)',
+    )
+    parser.add_argument('--output', default='fakeprints', help='Output folder (default: fakeprints)')
+    parser.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 1) - 2))
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    args = parse_args()
+    os.makedirs(args.output, exist_ok=True)
     print(f'Processing {len(TRACKS_UUIDS) * len(U_FOLDERS)} folders...')
-    print(f"Number of workers: {MAX_WORKERS}")
+    print(f"Number of workers: {args.workers}")
 
     jobs = [(uuid, u) for uuid in TRACKS_UUIDS for u in U_FOLDERS]
     total = len(jobs)
 
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_one, uuid, u): (uuid, u) for uuid, u in jobs}
+    with ProcessPoolExecutor(
+        max_workers=args.workers, initializer=init_worker, initargs=(args.fourier_path,)
+    ) as executor:
+        futures = {
+            executor.submit(process_one, args.aria_path, args.output, uuid, u): (uuid, u)
+            for uuid, u in jobs
+        }
         skipped = []
         with tqdm(total=total, desc='fakeprints') as pbar:
             for future in as_completed(futures):

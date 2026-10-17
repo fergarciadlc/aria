@@ -1,48 +1,34 @@
-"""Generate AI-reconstructed ARIA stems using the reference Encodec CLI flow."""
+"""Generate AI-reconstructed ARIA stems with Encodec.
+
+For every real stem of every track, encodes the stem once and writes one
+reconstruction per bandwidth to:
+    {aria_path}/{track_id}/stems/ai_generated/encodec_{bandwidth}/{stem_name}.mp3
+
+Processing mode, sample rate and bitrate defaults reproduce the released
+dataset; see aria/generators/encodec.py for what "replicate" means.
+
+Requires the ``generators`` extra (torch, transformers) and ffmpeg.
+"""
 
 import argparse
-import json
-import shutil
-import subprocess
-import sys
-import tempfile
+import os
 from dataclasses import dataclass
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from typing import List, Optional
 
-import torch
-import torchaudio
 from loguru import logger
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from ae_models.encodec import Encodec
-
-
-ARIA_PATH = "/Users/fernando/datasets/aria"
-SAVE_SAMPLE_RATE = 44100
-ENCODEC_BANDWIDTHS = [3, 6, 24]
-DEFAULT_BITRATE_KBPS = 256
-REAL_STEM_EXTENSIONS = (".wav", ".mp3")
-
-
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-    logger.info("Using CUDA GPU")
-elif torch.backends.mps.is_available():
-    DEVICE = "cpu"
-    logger.warning("MPS detected but using CPU (Encodec has MPS compatibility issues)")
-else:
-    DEVICE = "cpu"
-    logger.info("Using CPU")
+from aria.audio import ffmpeg_available, load_audio, save_audio
+from aria.constants import ENCODEC_BANDWIDTHS, MP3_BITRATE_KBPS, SAMPLE_RATE
+from aria.exceptions import MissingStemError
+from aria.generators.encodec import EncodecGenerator, detect_device
+from aria.track import get_stem_dir, get_stem_path, iter_track_dirs, load_track
 
 
 @dataclass
 class ProcessingStats:
     total_tracks: int = 0
-    processed_tracks: int = 0
-    skipped_tracks: int = 0
     total_stems: int = 0
     written_files: int = 0
     skipped_existing: int = 0
@@ -50,269 +36,159 @@ class ProcessingStats:
     errors: int = 0
 
 
-def load_track_metadata(track_path: Path) -> Optional[dict]:
-    metadata_path = track_path / "metadata.json"
-    if not metadata_path.exists():
-        logger.warning(f"Metadata not found: {metadata_path}")
-        return None
+@dataclass(frozen=True)
+class StemJob:
+    stem_path: Path
+    out_paths: dict[int, Path]
+
+
+@dataclass(frozen=True)
+class JobSettings:
+    save_sr: int
+    bitrate: int
+    min_duration: float
+    max_duration: float
+    overwrite: bool
+
+
+@dataclass
+class JobResult:
+    written: int = 0
+    skipped_existing: int = 0
+    skipped_short: int = 0
+    error: str = ""
+
+
+def collect_jobs(track_dirs: list[Path], bandwidths: list[int], stats: ProcessingStats) -> list[StemJob]:
+    """One job per real stem, with its output path for every bandwidth."""
+    jobs = []
+    for track_dir in track_dirs:
+        track = load_track(track_dir)
+        for stem_name in track.stem_names:
+            try:
+                stem_path = get_stem_path(track, stem_name, "real")
+            except MissingStemError as err:
+                logger.warning(str(err))
+                continue
+            out_paths = {
+                bandwidth: get_stem_dir(track, "ai_generated", f"encodec_{bandwidth}") / f"{stem_name}.mp3"
+                for bandwidth in bandwidths
+            }
+            jobs.append(StemJob(stem_path, out_paths))
+            stats.total_stems += 1
+    return jobs
+
+
+# Worker state: one model per process, loaded by init_worker.
+_generator: EncodecGenerator | None = None
+_settings: JobSettings | None = None
+
+
+def init_worker(mode: str, device: str, settings: JobSettings) -> None:
+    global _generator, _settings
+    _generator = EncodecGenerator(mode=mode, device=device)
+    _settings = settings
+
+
+def process_stem(job: StemJob) -> JobResult:
+    assert _generator is not None and _settings is not None
+    settings = _settings
+    result = JobResult()
+
+    pending = {
+        bandwidth: path
+        for bandwidth, path in job.out_paths.items()
+        if settings.overwrite or not path.exists()
+    }
+    result.skipped_existing = len(job.out_paths) - len(pending)
+    if not pending:
+        return result
 
     try:
-        with open(metadata_path, "r") as handle:
-            return json.load(handle)
+        audio, sr = load_audio(job.stem_path, target_sr=settings.save_sr, stereo=True)
+
+        if settings.min_duration > 0 and audio.shape[-1] < int(sr * settings.min_duration):
+            result.skipped_short = 1
+            return result
+        if settings.max_duration > 0:
+            audio = audio[:, : int(sr * settings.max_duration)]
+
+        rebuilt = _generator.process_multi(audio, sr, list(pending))
+        for bandwidth, path in pending.items():
+            save_audio(path, rebuilt[bandwidth], sr, mp3_bitrate=settings.bitrate)
+            result.written += 1
     except Exception as err:
-        logger.error(f"Failed to load metadata from {metadata_path}: {err}")
-        return None
+        result.error = f"{job.stem_path}: {err}"
 
-
-def get_track_directories(aria_path: Path) -> List[Path]:
-    if not aria_path.exists():
-        logger.error(f"ARIA path does not exist: {aria_path}")
-        return []
-
-    track_dirs = [
-        entry for entry in aria_path.iterdir() if entry.is_dir() and (entry / "metadata.json").exists()
-    ]
-    logger.info(f"Found {len(track_dirs)} tracks in {aria_path}")
-    return sorted(track_dirs)
-
-
-def get_real_stems(track_path: Path) -> List[Path]:
-    real_stems_path = track_path / "stems" / "real"
-    if not real_stems_path.exists():
-        logger.warning(f"Real stems directory not found: {real_stems_path}")
-        return []
-
-    stem_files = []
-    for extension in REAL_STEM_EXTENSIONS:
-        stem_files.extend(real_stems_path.glob(f"*{extension}"))
-    return sorted(stem_files)
-
-
-def ensure_ffmpeg_available() -> None:
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg is required to export MP3 stems but was not found in PATH")
-
-
-def load_audio(path: Path) -> tuple[torch.Tensor, int]:
-    file_format = path.suffix.lstrip(".") or None
-    return torchaudio.load(str(path), format=file_format)
-
-
-def resample_audio(audio: torch.Tensor, source_sr: int, target_sr: int) -> torch.Tensor:
-    if source_sr == target_sr:
-        return audio
-    return torchaudio.functional.resample(audio, source_sr, target_sr)
-
-
-def normalize_audio_shape(audio: torch.Tensor) -> torch.Tensor:
-    audio = torch.squeeze(audio)
-    if audio.ndim == 1:
-        audio = torch.stack([audio, audio], 0)
-    elif audio.ndim == 2 and audio.shape[0] > 2:
-        audio = audio[:2, :]
-    return audio.contiguous()
-
-
-def preprocess_audio(
-    path: Path,
-    save_sr: int,
-    min_duration: float,
-    max_duration: float,
-) -> Optional[torch.Tensor]:
-    audio, source_sr = load_audio(path)
-    audio = resample_audio(audio, source_sr, save_sr)
-    audio = normalize_audio_shape(audio)
-
-    min_len = int(save_sr * min_duration) if min_duration > 0 else 0
-    max_len = int(save_sr * max_duration) if max_duration > 0 else 0
-
-    if min_len and audio.shape[-1] < min_len:
-        return None
-    if max_len and audio.shape[-1] > max_len:
-        audio = audio[:, :max_len]
-    return audio.contiguous()
-
-
-def save_mp3(audio: torch.Tensor, output_path: Path, sample_rate: int, bitrate_kbps: int) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    bitrate_kbps = min(int(bitrate_kbps), 320)
-
-    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp_file:
-        torchaudio.save(tmp_file.name, audio, sample_rate=sample_rate)
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                tmp_file.name,
-                "-c:a",
-                "mp3",
-                "-b:a",
-                f"{bitrate_kbps}k",
-                str(output_path),
-            ],
-            check=True,
-        )
-
-
-def build_output_paths(stem_path: Path, track_path: Path, bandwidths: List[int]) -> dict[int, Path]:
-    stem_name = stem_path.stem
-    return {
-        bandwidth: track_path / "stems" / "ai_generated" / f"encodec_{bandwidth}" / f"{stem_name}.mp3"
-        for bandwidth in bandwidths
-    }
-
-
-def initialize_encodec_model(bandwidths: List[int], save_sr: int) -> Encodec:
-    logger.info("Initializing Encodec model...")
-    max_bandwidth = max(bandwidths)
-    logger.info(f"Loading Encodec model (max bandwidth={max_bandwidth} kbps)")
-    return Encodec(max_bandwidth, save_sr, DEVICE)
-
-
-def process_track(
-    track_path: Path,
-    model: Encodec,
-    bandwidths: List[int],
-    save_sr: int,
-    mode: str,
-    default_bitrate: int,
-    overwrite: bool,
-    min_duration: float,
-    max_duration: float,
-    stats: ProcessingStats,
-) -> None:
-    metadata = load_track_metadata(track_path)
-    if metadata is None:
-        stats.skipped_tracks += 1
-        return
-
-    real_stems = get_real_stems(track_path)
-    if not real_stems:
-        logger.warning(f"No real stems found for track {track_path.name}")
-        stats.skipped_tracks += 1
-        return
-
-    stats.total_stems += len(real_stems)
-    stats.processed_tracks += 1
-
-    track_name = f"{metadata.get('artist', 'Unknown')} - {metadata.get('name', 'Unknown')}"
-    logger.debug(
-        f"Processing track [{metadata.get('id', 'NONE')}]: {track_name} with {len(real_stems)} stems"
-    )
-
-    model_sr = model.processor.sampling_rate
-
-    for stem_path in real_stems:
-        out_paths = build_output_paths(stem_path, track_path, bandwidths)
-        if not overwrite and all(path.exists() for path in out_paths.values()):
-            stats.skipped_existing += len(out_paths)
-            continue
-
-        try:
-            audio = preprocess_audio(
-                stem_path,
-                save_sr=save_sr,
-                min_duration=min_duration,
-                max_duration=max_duration,
-            )
-            if audio is None:
-                stats.skipped_short += 1
-                continue
-
-            model_input = audio
-            if mode == "corrected":
-                model_input = resample_audio(audio, save_sr, model_sr)
-
-            with torch.no_grad():
-                rebuilt_list = model.autoencode_multi(model_input, bandwidths)
-
-            for bandwidth, rebuilt in zip(bandwidths, rebuilt_list):
-                output_path = out_paths[bandwidth]
-                if output_path.exists() and not overwrite:
-                    stats.skipped_existing += 1
-                    continue
-
-                rebuilt = normalize_audio_shape(rebuilt.cpu())
-                if mode == "corrected":
-                    rebuilt = resample_audio(rebuilt, model_sr, save_sr)
-                rebuilt = rebuilt[:, : audio.shape[-1]].contiguous()
-                save_mp3(rebuilt, output_path, save_sr, default_bitrate)
-                stats.written_files += 1
-        except Exception as err:
-            stats.errors += 1
-            logger.error(f"Failed to process {stem_path.name}: {err}")
+    return result
 
 
 def generate_ai_stems(
-    aria_path: str = ARIA_PATH,
-    limit: Optional[int] = None,
-    bandwidths: Optional[List[int]] = None,
-    save_sr: int = SAVE_SAMPLE_RATE,
+    aria_path: str,
+    limit: int | None = None,
+    bandwidths: list[int] | None = None,
+    save_sr: int = SAMPLE_RATE,
     mode: str = "replicate",
-    default_bitrate: int = DEFAULT_BITRATE_KBPS,
+    bitrate: int = MP3_BITRATE_KBPS,
     overwrite: bool = False,
     min_duration: float = 0.0,
     max_duration: float = 0.0,
+    num_workers: int = 1,
 ) -> None:
-    aria_root = Path(aria_path)
-    ensure_ffmpeg_available()
-    target_bandwidths = bandwidths if bandwidths is not None else ENCODEC_BANDWIDTHS
+    if not ffmpeg_available():
+        raise RuntimeError("ffmpeg is required to export MP3 stems but was not found in PATH")
+
+    bandwidths = list(bandwidths or ENCODEC_BANDWIDTHS)
+    device = detect_device()
+    if num_workers > cpu_count():
+        logger.warning(f"Requested {num_workers} workers but only {cpu_count()} CPUs available.")
+        num_workers = cpu_count()
 
     logger.info("=" * 80)
     logger.info("ARIA AI Stem Generation - Encodec")
     logger.info("=" * 80)
-    logger.info(f"Dataset path: {aria_root}")
-    logger.info(f"Device: {DEVICE}")
-    logger.info(f"Bandwidths: {target_bandwidths}")
+    logger.info(f"Dataset path: {aria_path}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Workers: {num_workers}")
+    logger.info(f"Bandwidths: {bandwidths}")
     logger.info(f"Mode: {mode}")
     logger.info(f"Save sample rate: {save_sr} Hz")
-    logger.info(f"Output format: mp3 @ {default_bitrate} kbps")
+    logger.info(f"Output format: mp3 @ {bitrate} kbps")
     logger.info(f"Min duration: {min_duration} s")
     logger.info(f"Max duration: {max_duration if max_duration > 0 else 'disabled'}")
 
-    track_dirs = get_track_directories(aria_root)
+    track_dirs = iter_track_dirs(aria_path)
+    if limit is not None:
+        track_dirs = track_dirs[:limit]
     if not track_dirs:
         logger.error("No tracks found. Exiting.")
         return
 
-    if limit is not None:
-        logger.info(f"Limiting processing to first {limit} tracks")
-        track_dirs = track_dirs[:limit]
-
     stats = ProcessingStats(total_tracks=len(track_dirs))
-    model = initialize_encodec_model(target_bandwidths, save_sr)
+    jobs = collect_jobs(track_dirs, bandwidths, stats)
+    settings = JobSettings(save_sr, bitrate, min_duration, max_duration, overwrite)
 
-    logger.info(f"Processing {len(track_dirs)} tracks...")
-    progress = tqdm(track_dirs, desc="Processing tracks")
+    logger.info(f"Processing {len(jobs)} stems from {len(track_dirs)} tracks...")
+    if num_workers == 1:
+        init_worker(mode, device, settings)
+        results = (process_stem(job) for job in jobs)
+        results = list(tqdm(results, total=len(jobs), desc="Processing stems"))
+    else:
+        with Pool(num_workers, initializer=init_worker, initargs=(mode, device, settings)) as pool:
+            results = list(tqdm(pool.imap(process_stem, jobs), total=len(jobs), desc="Processing stems"))
 
-    for track_path in progress:
-        metadata = load_track_metadata(track_path)
-        if metadata:
-            track_name = f"{metadata.get('artist', 'Unknown')} - {metadata.get('name', 'Unknown')}"
-            progress.set_postfix_str(track_name[:50])
-
-        process_track(
-            track_path=track_path,
-            model=model,
-            bandwidths=target_bandwidths,
-            save_sr=save_sr,
-            mode=mode,
-            default_bitrate=default_bitrate,
-            overwrite=overwrite,
-            min_duration=min_duration,
-            max_duration=max_duration,
-            stats=stats,
-        )
+    for result in results:
+        stats.written_files += result.written
+        stats.skipped_existing += result.skipped_existing
+        stats.skipped_short += result.skipped_short
+        if result.error:
+            stats.errors += 1
+            logger.error(f"Failed: {result.error}")
 
     logger.info("=" * 80)
     logger.info("Processing Complete!")
     logger.info("=" * 80)
-    logger.info(f"Tracks processed: {stats.processed_tracks}/{stats.total_tracks}")
-    logger.info(f"Tracks skipped: {stats.skipped_tracks}")
+    logger.info(f"Tracks: {stats.total_tracks}")
     logger.info(f"Source stems seen: {stats.total_stems}")
     logger.info(f"Files written: {stats.written_files}")
     logger.info(f"Skipped existing outputs: {stats.skipped_existing}")
@@ -323,39 +199,45 @@ def generate_ai_stems(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate AI-reconstructed stems for ARIA using the reference Encodec CLI flow",
+        description="Generate AI-reconstructed stems for ARIA with Encodec",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/generate_ai_stems.py
+  python scripts/generate_ai_stems.py --aria-path /path/to/aria
   python scripts/generate_ai_stems.py --aria-path /path/to/aria --bandwidths 3 6 24
-  python scripts/generate_ai_stems.py --limit 10 --mode corrected
-  python scripts/generate_ai_stems.py --overwrite --save-sr 44100
+  python scripts/generate_ai_stems.py --aria-path /path/to/aria --limit 10 --mode corrected
+  python scripts/generate_ai_stems.py --aria-path /path/to/aria --workers 8   # CPU only
         """,
     )
 
-    parser.add_argument("--aria-path", type=str, default=ARIA_PATH, help=f"Path to the ARIA dataset (default: {ARIA_PATH})")
+    parser.add_argument(
+        "--aria-path",
+        default=os.environ.get("ARIA_ROOT"),
+        required="ARIA_ROOT" not in os.environ,
+        help="Path to the ARIA dataset (default: $ARIA_ROOT)",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of tracks to process")
     parser.add_argument(
         "--bandwidths",
         nargs="+",
         type=int,
-        default=ENCODEC_BANDWIDTHS,
-        choices=[3, 6, 12, 24],
-        help=f"Encodec bandwidths to use in kbps (default: {ENCODEC_BANDWIDTHS})",
+        default=list(ENCODEC_BANDWIDTHS),
+        choices=list(EncodecGenerator.SUPPORTED_BANDWIDTHS),
+        help=f"Encodec bandwidths to use in kbps (default: {list(ENCODEC_BANDWIDTHS)})",
     )
-    parser.add_argument("--save-sr", type=int, default=SAVE_SAMPLE_RATE, help=f"Output sample rate (default: {SAVE_SAMPLE_RATE})")
+    parser.add_argument("--save-sr", type=int, default=SAMPLE_RATE, help=f"Output sample rate (default: {SAMPLE_RATE})")
     parser.add_argument(
         "--mode",
         choices=["replicate", "corrected"],
         default="replicate",
-        help="Reference processing mode to use (default: replicate)",
+        help="Encodec processing mode (default: replicate, as in the released dataset)",
     )
     parser.add_argument(
+        "--bitrate",
         "--default-bitrate",
         type=int,
-        default=DEFAULT_BITRATE_KBPS,
-        help=f"MP3 bitrate to use when writing outputs (default: {DEFAULT_BITRATE_KBPS})",
+        default=MP3_BITRATE_KBPS,
+        help=f"MP3 bitrate in kbps (default: {MP3_BITRATE_KBPS})",
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing generated stems")
     parser.add_argument(
@@ -370,6 +252,12 @@ Examples:
         default=0.0,
         help="Maximum duration in seconds; longer stems are truncated (default: disabled)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Worker processes, each with its own model (default: 1). Use >1 only on CPU.",
+    )
 
     return parser.parse_args()
 
@@ -382,9 +270,9 @@ if __name__ == "__main__":
         bandwidths=args.bandwidths,
         save_sr=args.save_sr,
         mode=args.mode,
-        default_bitrate=args.default_bitrate,
+        bitrate=args.bitrate,
         overwrite=args.overwrite,
         min_duration=args.min_duration,
         max_duration=args.max_duration,
+        num_workers=args.workers,
     )
-

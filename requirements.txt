@@ -1,17 +1,7 @@
-# Core dependencies (for using the library)
-numpy>=1.21
-soundfile>=0.12
-scipy>=1.9
+# Library, all extras and dev tools (see pyproject.toml)
+-e .[all]
 
-# PyTorch integration (optional)
-torch>=2.0
-
-# For dataset creation scripts
-pydub
-loguru
-tqdm
+# scripts/prepare_moisesdb.py
 git+https://github.com/moises-ai/moises-db.git
 
-# For AI stem generation
-torchaudio>=2.0
-encodec>=0.1.1
+# MP3 output (AI stems, mixes, packaging) also needs the ffmpeg binary on PATH.

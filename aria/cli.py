@@ -2,17 +2,17 @@
 Command-line interface for ARIA dataset tools.
 
 Usage:
-    python -m aria.cli package --source /path/to/aria --output /path/to/output --tier tiny
-    python -m aria.cli validate /path/to/aria
-    python -m aria.cli info /path/to/aria
+    python -m aria package --source /path/to/aria --output /path/to/output --tier tiny
+    python -m aria validate /path/to/aria
+    python -m aria info /path/to/aria
 """
 
 import argparse
 import sys
 
 from aria.dataset import ARIADataset
-from aria.validate import validate_dataset, get_dataset_summary
-from aria.packaging import package_dataset, PackageConfig, list_tiers
+from aria.packaging import TIERS, PackageConfig, list_tiers, package_dataset
+from aria.validate import get_dataset_summary, validate_dataset
 
 
 def cmd_package(args):
@@ -27,7 +27,6 @@ def cmd_package(args):
             audio_format=args.format,
             include_mixes=args.include_mixes,
             codecs=args.codecs.split(",") if args.codecs else None,
-            seed=args.seed,
         )
     
     stats = package_dataset(
@@ -86,12 +85,12 @@ def cmd_info(args):
         dataset = ARIADataset(args.path)
         stats = dataset.stats()
         
-        print(f"\nDetailed Statistics:")
+        print("\nDetailed Statistics:")
         print(f"  Total stems: {stats['total_stems']}")
         print(f"  Average stems/track: {stats['avg_stems']:.1f}")
         print(f"  Stem range: {stats['min_stems']} - {stats['max_stems']}")
         
-        print(f"\nGenres:")
+        print("\nGenres:")
         for genre, count in sorted(stats['genres'].items(), key=lambda x: -x[1]):
             print(f"  - {genre}: {count} tracks")
 
@@ -117,15 +116,14 @@ def main():
     pkg_parser = subparsers.add_parser("package", help="Package dataset for distribution")
     pkg_parser.add_argument("--source", "-s", required=True, help="Source dataset path")
     pkg_parser.add_argument("--output", "-o", required=True, help="Output path")
-    pkg_parser.add_argument("--tier", "-t", choices=["tiny", "small", "medium", "full"],
+    pkg_parser.add_argument("--tier", "-t", choices=list(TIERS),
                            help="Use predefined tier")
     pkg_parser.add_argument("--num-tracks", "-n", type=int, help="Number of tracks")
     pkg_parser.add_argument("--format", "-f", choices=["wav", "flac", "mp3"], default="flac",
                            help="Audio format (default: flac)")
     pkg_parser.add_argument("--include-mixes", "-m", action="store_true",
-                           help="Pre-generate all mixes")
+                           help="Include all mixes (copied if pre-computed, else computed)")
     pkg_parser.add_argument("--codecs", "-c", help="Comma-separated codecs (e.g., encodec_3,encodec_6)")
-    pkg_parser.add_argument("--seed", type=int, default=42, help="Random seed for track selection")
     pkg_parser.set_defaults(func=cmd_package)
     
     # Validate command

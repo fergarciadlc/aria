@@ -362,7 +362,7 @@ For a track with **n** stems:
 | `ARIADataset` | Main entry point for loading and iterating tracks |
 | `Track` | Single track with metadata and stem paths |
 | `MixSpec` | Specification for a mix (which stems are AI) |
-| `Config` | Configuration options |
+| `SplitManifest` | Train/val/test split manifest (JSONL) |
 
 ### Core Functions
 

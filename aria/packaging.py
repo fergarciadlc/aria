@@ -9,17 +9,17 @@ Create distribution variants of the ARIA dataset with different:
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from tqdm import tqdm
 
 from aria.audio import load_audio, save_audio
+from aria.constants import MP3_BITRATE_KBPS, SAMPLE_RATE
 from aria.dataset import ARIADataset
-from aria.mix import MixSpec, generate_all_mix_specs, compute_mix
-from aria.track import Track, get_stem_path, get_available_codecs
-
+from aria.mix import compute_mix, find_mix_path, generate_all_mix_specs, mix_metadata
+from aria.track import Track, get_available_codecs, get_stem_path
 
 AudioFormat = Literal["wav", "flac", "mp3"]
 
@@ -40,17 +40,16 @@ class PackageConfig:
     Attributes:
         num_tracks: Number of tracks to include (None = all).
         audio_format: Output audio format.
-        include_mixes: Whether to pre-generate mixes.
+        include_mixes: Whether to include mixes (copied when pre-computed,
+            computed from stems otherwise).
         codecs: Which AI codecs to include (None = all available).
-        seed: Random seed for reproducible track selection.
         mp3_bitrate: Bitrate for MP3 encoding (kbps).
     """
     num_tracks: int | None = None
     audio_format: AudioFormat = "flac"
     include_mixes: bool = False
     codecs: list[str] | None = None
-    seed: int = 42
-    mp3_bitrate: int = 320
+    mp3_bitrate: int = MP3_BITRATE_KBPS
     
     @classmethod
     def from_tier(cls, tier: str, **overrides) -> "PackageConfig":
@@ -74,83 +73,39 @@ class PackageStats:
     tracks_processed: int = 0
     stems_copied: int = 0
     mixes_generated: int = 0
-    errors: list[str] = None
-    
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
+    errors: list[str] = field(default_factory=list)
 
 
-def select_tracks(
-    dataset: ARIADataset,
-    num_tracks: int | None,
-    seed: int = 42,
-) -> list[Track]:
-    """Select tracks for packaging.
-    
-    Uses deterministic selection based on seed for reproducibility.
-    Tracks are sorted by display_name, then first N selected.
+def select_tracks(dataset: ARIADataset, num_tracks: int | None) -> list[Track]:
+    """Select tracks for packaging: the first N in display-name order.
     
     Args:
-        dataset: Source dataset.
+        dataset: Source dataset (already sorted by display_name).
         num_tracks: Number of tracks to select (None = all).
-        seed: Random seed (currently unused, deterministic selection).
     
     Returns:
         List of selected tracks.
     """
-    all_tracks = list(dataset)
-    
-    # Sort by display_name for deterministic order
-    all_tracks.sort(key=lambda t: t.display_name.lower())
-    
-    if num_tracks is None:
-        return all_tracks
-    
-    return all_tracks[:num_tracks]
+    return list(dataset.tracks[:num_tracks])
 
 
-def get_audio_extension(format: AudioFormat) -> str:
-    """Get file extension for audio format."""
-    return f".{format}"
-
-
-def convert_audio_file(
-    src_path: Path,
-    dst_path: Path,
-    target_format: AudioFormat,
-    mp3_bitrate: int = 320,
-) -> bool:
-    """Convert audio file to target format.
+def copy_audio(src_path: Path, dst_path: Path, config: PackageConfig) -> None:
+    """Copy an audio file, converting it if its format differs.
     
     Args:
         src_path: Source audio file.
-        dst_path: Destination path (with correct extension).
-        target_format: Target format.
-        mp3_bitrate: Bitrate for MP3 (ignored for other formats).
+        dst_path: Destination path (extension = target format).
+        config: Package configuration (for MP3 bitrate).
     
-    Returns:
-        True if successful.
+    Raises:
+        Exception: If loading or encoding fails.
     """
-    try:
-        audio, sr = load_audio(src_path)
-        
-        # Determine subtype
-        if target_format == "mp3":
-            # MP3 requires special handling
-            import soundfile as sf
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            # Note: soundfile doesn't support MP3 writing directly
-            # For now, save as FLAC and note that MP3 needs additional tooling
-            # TODO: Add proper MP3 support via pydub or ffmpeg
-            save_audio(dst_path.with_suffix(".flac"), audio, sr, format="flac")
-            return True
-        else:
-            save_audio(dst_path, audio, sr, format=target_format)
-            return True
-            
-    except Exception as e:
-        return False
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    if src_path.suffix == dst_path.suffix:
+        shutil.copy2(src_path, dst_path)
+        return
+    audio, sr = load_audio(src_path)
+    save_audio(dst_path, audio, sr, mp3_bitrate=config.mp3_bitrate)
 
 
 def package_track(
@@ -167,7 +122,7 @@ def package_track(
         config: Package configuration.
         stats: Statistics to update.
     """
-    ext = get_audio_extension(config.audio_format)
+    ext = f".{config.audio_format}"
     
     # Create track directory
     track_output = output_path / track.id
@@ -185,78 +140,46 @@ def package_track(
     else:
         codecs_to_copy = available_codecs
     
-    # Copy real stems
-    real_output = track_output / "stems" / "real"
-    real_output.mkdir(parents=True, exist_ok=True)
+    # Copy real stems, then AI stems per codec
+    sources: list[tuple[str, str | None]] = [("real", None)]
+    sources += [("ai_generated", codec) for codec in codecs_to_copy]
     
-    for stem_name in track.stem_names:
-        try:
-            src = get_stem_path(track, stem_name, "real")
-            dst = real_output / f"{stem_name}{ext}"
-            
-            if config.audio_format == "wav" and src.suffix == ".wav":
-                # Just copy if same format
-                shutil.copy2(src, dst)
-            else:
-                convert_audio_file(src, dst, config.audio_format, config.mp3_bitrate)
-            
-            stats.stems_copied += 1
-        except Exception as e:
-            stats.errors.append(f"Failed to copy real stem {stem_name} for {track.id}: {e}")
-    
-    # Copy AI stems
-    for codec in codecs_to_copy:
-        ai_output = track_output / "stems" / "ai_generated" / codec
-        ai_output.mkdir(parents=True, exist_ok=True)
+    for source, codec in sources:
+        out_dir = track_output / "stems" / source
+        if codec is not None:
+            out_dir = out_dir / codec
         
         for stem_name in track.stem_names:
             try:
-                src = get_stem_path(track, stem_name, "ai_generated", codec)
-                dst = ai_output / f"{stem_name}{ext}"
-                
-                if config.audio_format == "wav" and src.suffix == ".wav":
-                    shutil.copy2(src, dst)
-                else:
-                    convert_audio_file(src, dst, config.audio_format, config.mp3_bitrate)
-                
+                src = get_stem_path(track, stem_name, source, codec)
+                copy_audio(src, out_dir / f"{stem_name}{ext}", config)
                 stats.stems_copied += 1
             except Exception as e:
-                stats.errors.append(f"Failed to copy AI stem {stem_name} ({codec}) for {track.id}: {e}")
+                label = source if codec is None else f"{source} {codec}"
+                stats.errors.append(f"Failed to copy {label} stem {stem_name} for {track.id}: {e}")
     
-    # Generate mixes if requested
+    # Copy pre-computed mixes, computing the missing ones
     if config.include_mixes:
         for codec in codecs_to_copy:
-            mixes_output = track_output / "mixes" / codec
-            
-            all_specs = generate_all_mix_specs(track.num_stems, codec)
-            
-            for spec in all_specs:
+            for spec in generate_all_mix_specs(track.num_stems, codec):
                 try:
-                    mix_dir = mixes_output / spec.u_folder
-                    mix_dir.mkdir(parents=True, exist_ok=True)
-                    
+                    mix_dir = track_output / "mixes" / codec / spec.u_folder
                     mix_path = mix_dir / f"{spec.filename}{ext}"
                     
-                    # Compute mix
-                    audio = compute_mix(track, spec)
-                    save_audio(mix_path, audio, 48000, format=config.audio_format)
+                    src = find_mix_path(track, spec)
+                    if src is not None:
+                        copy_audio(src, mix_path, config)
+                    else:
+                        audio = compute_mix(track, spec, target_sr=SAMPLE_RATE)
+                        save_audio(mix_path, audio, SAMPLE_RATE, mp3_bitrate=config.mp3_bitrate)
                     
-                    # Save mix metadata
-                    mix_meta = {
-                        "mix_name": spec.filename,
-                        "num_stems": track.num_stems,
-                        "num_ai_stems": spec.num_ai_stems,
-                        "ai_stem_indices": list(spec.ai_indices),
-                        "ai_codec": spec.codec,
-                        "stem_names": track.stem_names,
-                    }
                     with open(mix_dir / f"{spec.filename}.json", "w") as f:
-                        json.dump(mix_meta, f, indent=2)
+                        json.dump(mix_metadata(track, spec), f, indent=2)
                     
                     stats.mixes_generated += 1
                     
                 except Exception as e:
-                    stats.errors.append(f"Failed to generate mix {spec.filename} for {track.id}: {e}")
+                    stats.errors.append(f"Failed to package mix {spec.filename} for {track.id}: {e}")
     
     stats.tracks_processed += 1
 
@@ -315,7 +238,7 @@ def package_dataset(
     dataset = ARIADataset(source_path)
     
     # Select tracks
-    tracks = select_tracks(dataset, config.num_tracks, config.seed)
+    tracks = select_tracks(dataset, config.num_tracks)
     
     # Initialize stats
     stats = PackageStats()
@@ -348,7 +271,7 @@ def package_dataset(
         print(f"\n✓ Packaged {stats.tracks_processed} tracks")
         print(f"  Stems copied: {stats.stems_copied}")
         if config.include_mixes:
-            print(f"  Mixes generated: {stats.mixes_generated}")
+            print(f"  Mixes packaged: {stats.mixes_generated}")
         if stats.errors:
             print(f"  Errors: {len(stats.errors)}")
             for err in stats.errors[:5]:
@@ -357,7 +280,7 @@ def package_dataset(
     return stats
 
 
-def list_tiers() -> dict:
+def list_tiers() -> dict[str, dict[str, Any]]:
     """List available predefined tiers."""
     return TIERS.copy()
 

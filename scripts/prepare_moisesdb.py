@@ -10,37 +10,28 @@ The output structure follows the ARIA specification:
     {aria_path}/{track_id}/metadata.json
 
 Usage:
-    python prepare_moisesdb.py [--aria-path PATH] [--moisesdb-path PATH] [--limit N]
-    
-Examples:
-    # Process all tracks
-    python prepare_moisesdb.py
-    
-    # Process first 10 tracks only (testing)
-    python prepare_moisesdb.py --limit 10
-    
-    # Use custom dataset paths
-    python prepare_moisesdb.py --aria-path /path/to/aria --moisesdb-path /path/to/moisesdb
+    python scripts/prepare_moisesdb.py --aria-path PATH --moisesdb-path PATH [--limit N]
+
+Paths default to the ARIA_ROOT and MOISESDB_ROOT environment variables.
 """
 
 import argparse
 import json
 import os
-from dataclasses import dataclass, asdict
-from typing import List, Optional
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from uuid import uuid4
 
 from loguru import logger
 from moisesdb.dataset import MoisesDB
 from moisesdb.track import MoisesDBTrack as Track
-from pydub import AudioSegment
+from moisesdb.utils import save_audio as save_wav
 from tqdm import tqdm
-import numpy as np
 
-MOISESDB_PATH = "/Users/fernando/datasets/moisesdb"
-ARIA_PATH = "/Users/fernando/datasets/aria"
+from aria.audio import save_audio
+from aria.constants import MP3_BITRATE_KBPS, SAMPLE_RATE
+
 ARIA_STEMS_PATH = "{aria_path}/{track_id}/stems/real"
-SAMPLE_RATE = 44100
 
 
 def save_json(filepath: str, data: dict) -> None:
@@ -56,11 +47,11 @@ class AriaTrackMetadata:
     genre: str
     provider: str
     number_of_stems: int = 0
-    stems: List[str] = None
-    additional_info: dict = None
+    stems: list[str] = field(default_factory=list)
+    additional_info: dict = field(default_factory=dict)
 
 
-def get_moisesdb(data_path: str = MOISESDB_PATH, sample_rate: int = SAMPLE_RATE) -> MoisesDB:
+def get_moisesdb(data_path: str, sample_rate: int = SAMPLE_RATE) -> MoisesDB:
     return MoisesDB(data_path=data_path, sample_rate=sample_rate)
 
 
@@ -93,42 +84,18 @@ def save_stems_with_format(track: Track, stems_path: str, format: str = "wav") -
     os.makedirs(stems_path, exist_ok=True)
     
     for stem_name, audio in track.stems.items():
-        if audio is not None:
-            if format == "wav":
-                # Use original WAV saving method
-                filepath = os.path.join(stems_path, f"{stem_name}.wav")
-                from moisesdb.utils import save_audio
-                save_audio(filepath, audio, sr=track.sr)
-            elif format == "mp3":
-                # Convert to MP3 at 256 kbps
-                filepath = os.path.join(stems_path, f"{stem_name}.mp3")
-                # Convert numpy array to AudioSegment
-                # audio shape is (channels, samples)
-                audio_int16 = (audio * 32767).astype(np.int16)
-                audio_interleaved = audio_int16.T.flatten()
-                audio_segment = AudioSegment(
-                    audio_interleaved.tobytes(),
-                    frame_rate=track.sr,
-                    sample_width=2,  # 16-bit
-                    channels=audio.shape[0]
-                )
-                audio_segment.export(filepath, format="mp3", bitrate="256k")
-            else:
-                raise ValueError(f"Unsupported format: {format}. Use 'wav' or 'mp3'.")
+        if audio is None:
+            continue
+        if format == "wav":
+            save_wav(os.path.join(stems_path, f"{stem_name}.wav"), audio, sr=track.sr)
+        elif format == "mp3":
+            # audio shape is (channels, samples)
+            save_audio(Path(stems_path) / f"{stem_name}.mp3", audio, track.sr, mp3_bitrate=MP3_BITRATE_KBPS)
+        else:
+            raise ValueError(f"Unsupported format: {format}. Use 'wav' or 'mp3'.")
 
 
-def export_moisesdb_track_stems(track: Track, stems_path: str, format: str = "wav") -> None:
-    """Export track stems in the specified format.
-    
-    Args:
-        track: MoisesDB track to export
-        stems_path: Directory path where stems will be saved
-        format: Audio format ('wav' or 'mp3')
-    """
-    save_stems_with_format(track, stems_path, format)
-
-
-def process_mosiesdb(aria_path: str = ARIA_PATH, moisesdb_path: str = MOISESDB_PATH, limit: Optional[int] = None, sample_rate: int = SAMPLE_RATE, format: str = "wav"):
+def process_moisesdb(aria_path: str, moisesdb_path: str, limit: int | None = None, sample_rate: int = SAMPLE_RATE, format: str = "wav"):
     """Process MoisesDB tracks and export to ARIA format.
     
     Args:
@@ -144,7 +111,7 @@ def process_mosiesdb(aria_path: str = ARIA_PATH, moisesdb_path: str = MOISESDB_P
     
     logger.info(f"Preparing MoisesDB dataset: processing {tracks_to_process} of {total_tracks} tracks.")
     logger.info(f"Sample rate: {sample_rate} Hz")
-    logger.info(f"Output format: {format.upper()}" + (f" @ 256 kbps" if format == "mp3" else ""))
+    logger.info(f"Output format: {format.upper()}" + (f" @ {MP3_BITRATE_KBPS} kbps" if format == "mp3" else ""))
 
     counter = 0
     pbar = tqdm(db, total=tracks_to_process, desc="Processing MoisesDB tracks")
@@ -159,7 +126,7 @@ def process_mosiesdb(aria_path: str = ARIA_PATH, moisesdb_path: str = MOISESDB_P
         stems_export_path = ARIA_STEMS_PATH.format(
             aria_path=aria_path, track_id=metadata.id
         )
-        export_moisesdb_track_stems(track, stems_export_path, format=format)
+        save_stems_with_format(track, stems_export_path, format=format)
 
         # Save track metadata
         save_json(f"{aria_path}/{metadata.id}/metadata.json", asdict(metadata))
@@ -176,34 +143,25 @@ def parse_args():
         epilog="""
 Examples:
   # Process all tracks (default WAV format)
-  python prepare_moisesdb.py
-  
-  # Process with MP3 format at 256 kbps
-  python prepare_moisesdb.py --format mp3
-  
-  # Process first 10 tracks only (testing)
-  python prepare_moisesdb.py --limit 10
-  
-  # Use custom ARIA dataset path with MP3 format
-  python prepare_moisesdb.py --aria-path /path/to/aria --format mp3
-  
-  # Use custom MoisesDB path
-  python prepare_moisesdb.py --moisesdb-path /path/to/moisesdb
+  python scripts/prepare_moisesdb.py --aria-path /path/to/aria --moisesdb-path /path/to/moisesdb
+
+  # Process first 10 tracks only (testing), MP3 output
+  python scripts/prepare_moisesdb.py --aria-path /path/to/aria --moisesdb-path /path/to/moisesdb --limit 10 --format mp3
         """
     )
     
     parser.add_argument(
         "--aria-path",
-        type=str,
-        default=ARIA_PATH,
-        help=f"Path to the ARIA dataset output directory (default: {ARIA_PATH})"
+        default=os.environ.get("ARIA_ROOT"),
+        required="ARIA_ROOT" not in os.environ,
+        help="Path to the ARIA dataset output directory (default: $ARIA_ROOT)"
     )
     
     parser.add_argument(
         "--moisesdb-path",
-        type=str,
-        default=MOISESDB_PATH,
-        help=f"Path to the MoisesDB dataset (default: {MOISESDB_PATH})"
+        default=os.environ.get("MOISESDB_ROOT"),
+        required="MOISESDB_ROOT" not in os.environ,
+        help="Path to the MoisesDB dataset (default: $MOISESDB_ROOT)"
     )
     
     parser.add_argument(
@@ -225,7 +183,7 @@ Examples:
         type=str,
         choices=["wav", "mp3"],
         default="wav",
-        help="Audio format for exported stems: 'wav' (original) or 'mp3' (256 kbps, default: wav)"
+        help=f"Audio format for exported stems: 'wav' (original) or 'mp3' ({MP3_BITRATE_KBPS} kbps, default: wav)"
     )
     
     return parser.parse_args()
@@ -234,7 +192,7 @@ Examples:
 if __name__ == "__main__":
     args = parse_args()
     
-    process_mosiesdb(
+    process_moisesdb(
         aria_path=args.aria_path,
         moisesdb_path=args.moisesdb_path,
         limit=args.limit,

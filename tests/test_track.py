@@ -2,8 +2,14 @@
 
 import pytest
 
-from aria.track import Track, load_track, get_stem_path, get_available_codecs, has_all_stems
-from aria.exceptions import TrackNotFoundError, MissingStemError
+from aria.exceptions import MissingStemError, TrackNotFoundError
+from aria.track import (
+    Track,
+    get_available_codecs,
+    get_stem_path,
+    has_all_stems,
+    load_track,
+)
 
 
 class TestTrack:
@@ -54,7 +60,7 @@ class TestLoadTrack:
         assert track.artist == "Test Artist"
         assert track.name == "Test Song"
         assert track.genre == "rock"
-        assert track.stem_names == ["vocals", "drums", "bass"]
+        assert track.stem_names == ["bass", "drums", "vocals"]  # sorted
         assert track.path == mock_track_path
     
     def test_load_track_not_found(self, temp_dir):

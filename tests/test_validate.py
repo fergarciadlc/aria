@@ -1,16 +1,15 @@
 """Tests for validate module."""
 
-import pytest
 
+from aria.track import load_track
 from aria.validate import (
     ValidationResult,
-    validate_track,
-    validate_dataset_path,
-    validate_dataset,
     check_dataset_exists,
     get_dataset_summary,
+    validate_dataset,
+    validate_dataset_path,
+    validate_track,
 )
-from aria.track import load_track
 
 
 class TestValidationResult:
